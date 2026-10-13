@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0e0f12">
+<title>Screen Share</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect x='6' y='10' width='52' height='34' rx='5' fill='%2334d399'/><rect x='24' y='48' width='16' height='5' rx='2' fill='%2334d399'/></svg>">
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+  :root {
+    --bg: #0e0f12; --panel: #17191e; --line: #2a2d35; --text: #eceef2;
+    --muted: #9095a1; --accent: #34d399; --accent-ink: #052e1f; --danger: #f87171;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  .hidden { display: none !important; }
+  button { font: inherit; cursor: pointer; border: 0; border-radius: 10px; padding: 12px 18px;
+    background: var(--line); color: var(--text); transition: filter .15s; }
+  button:hover { filter: brightness(1.15); }
+  button:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+  button.primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button.danger { background: transparent; color: var(--danger); border: 1px solid #5b2a2a; }
+  input { font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; width: 100%; letter-spacing: .12em; text-transform: uppercase; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  /* ---------- pages ---------- */
+  .page { min-height: 100%; display: grid; place-items: center; padding: 24px 16px; }
+  .card { width: 100%; max-width: 440px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 28px 24px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0 0 22px; font-size: 15px; }
+  .stack > * + * { margin-top: 12px; }
+  .row { display: flex; gap: 10px; }
+  .row > button { flex: 1; }
+  .divider { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; margin: 22px 0; }
+  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .note { color: var(--muted); font-size: 13px; }
+  .check { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; }
+  .check input { width: auto; }
+
+  /* ---------- host ---------- */
+  .linkbox { display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 10px; padding: 6px 6px 6px 14px; }
+  .linkbox code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; color: var(--muted); }
+  .linkbox button { padding: 8px 14px; }
+  .bigcode { font: 600 34px/1 ui-monospace, "SF Mono", Consolas, monospace; letter-spacing: .2em; text-align: center; margin: 4px 0 2px; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.on { background: var(--accent); box-shadow: 0 0 0 4px rgba(52,211,153,.18); }
+  .dot.live { background: var(--danger); box-shadow: 0 0 0 4px rgba(248,113,113,.2); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 7px rgba(248,113,113,.05); } }
+  #preview { width: 100%; border-radius: 10px; background: #000; aspect-ratio: 16/9; object-fit: contain; }
+
+  /* ---------- viewer ---------- */
+  #viewer { position: fixed; inset: 0; background: #000; }
+  #remote { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+  #viewer.fill #remote { object-fit: cover; }
+  #viewer.actual { overflow: auto; -webkit-overflow-scrolling: touch; }
+  #viewer.actual #remote { width: auto; height: auto; max-width: none; max-height: none; }
+  .overlay { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px;
+    color: var(--muted); pointer-events: none; }
+  .overlay .big { color: var(--text); font-size: 19px; margin-bottom: 6px; }
+  .spinner { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--accent);
+    border-radius: 50%; margin: 0 auto 16px; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .toolbar { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+    display: flex; gap: 6px; padding: 6px; background: rgba(23,25,30,.86); backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px); border: 1px solid var(--line); border-radius: 14px; transition: opacity .3s; }
+  .toolbar button { padding: 10px 14px; font-size: 14px; background: transparent; white-space: nowrap; }
+  .toolbar button.on { background: var(--line); }
+  .toolbar.faded { opacity: 0; pointer-events: none; }
+  #tapToPlay { pointer-events: auto; }
+</style>
+</head>
+<body>
+
+<!-- ============ HOME ============ -->
+<section id="home" class="page hidden">
+  <div class="card">
+    <h1>Screen Share</h1>
+    <p class="sub">Show your desktop live to anyone with the link.</p>
+    <div class="stack">
+      <button id="goHost" class="primary" style="width:100%">Share my screen</button>
+      <p id="mobileNote" class="note hidden">Sharing needs Chrome or Edge on a computer. On this device you can watch.</p>
+    </div>
+    <div class="divider">or watch</div>
+    <form id="watchForm" class="row">
+      <input id="codeInput" maxlength="6" placeholder="Code" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      <button class="primary" style="flex:0 0 auto">Watch</button>
+    </form>
+  </div>
+</section>
+
+<!-- ============ HOST ============ -->
+<section id="host" class="page hidden">
+  <div class="card stack">
+    <div class="status"><span id="hostDot" class="dot"></span><span id="hostStatus">Connecting…</span></div>
+    <div>
+      <p class="note" style="margin:8px 0 6px">Send her this link, or have her enter the code:</p>
+      <div class="linkbox"><code id="shareLink">…</code><button id="copyBtn">Copy</button></div>
+      <div id="bigCode" class="bigcode">······</div>
+    </div>
+    <video id="preview" class="hidden" muted playsinline autoplay></video>
+    <label class="check"><input type="checkbox" id="withAudio"> Include computer sound</label>
+    <button id="startBtn" class="primary" disabled>Choose screen or window</button>
+    <div class="row hidden" id="liveRow">
+      <button id="switchBtn">Switch window</button>
+      <button id="stopBtn" class="danger">Stop</button>
+    </div>
+    <p class="note">Tip: sharing a single window looks sharper than a whole monitor. The link stays the same next time. <a href="#" id="newCode" style="color:var(--muted)">Make a new one</a></p>
+  </div>
+</section>
+
+<!-- ============ VIEWER ============ -->
+<section id="viewer" class="hidden">
+  <video id="remote" playsinline autoplay muted></video>
+  <div id="overlay" class="overlay">
+    <div><div class="spinner"></div><div class="big" id="ovTitle">Connecting…</div><div id="ovSub"></div></div>
+  </div>
+  <div id="tapOverlay" class="overlay hidden">
+    <button id="tapToPlay" class="primary">Tap to start</button>
+  </div>
+  <div id="toolbar" class="toolbar hidden">
+    <button id="fitBtn" class="on">Fit</button>
+    <button id="actualBtn">Actual size</button>
+    <button id="soundBtn" class="hidden">Sound off</button>
+    <button id="fsBtn">Full screen</button>
+  </div>
+</section>
+
+<script>
+(() => {
+  const PREFIX = "chris203-ss-";            // namespaces our IDs on the public PeerJS broker
+  const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O/1/I/L confusion
+  const $ = id => document.getElementById(id);
+  const show = (el, on = true) => el.classList.toggle("hidden", !on);
+  const params = new URLSearchParams(location.search);
+  const canShare = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)
+                   && !/iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  };
+  const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), b => ALPHABET[b % ALPHABET.length]).join("");
+  const cleanCode = s => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+
+  // ---------------- routing ----------------
+  const watchCode = cleanCode(params.get("w"));
+  if (watchCode.length === 6) startViewer(watchCode);
+  else if (params.has("host")) startHost();
+  else {
+    show($("home"));
+    if (!canShare) { $("goHost").disabled = true; show($("mobileNote")); }
+    $("goHost").onclick = () => { history.replaceState(null, "", "?host"); show($("home"), false); startHost(); };
+    $("watchForm").onsubmit = e => {
+      e.preventDefault();
+      const c = cleanCode($("codeInput").value);
+      if (c.length === 6) location.search = "?w=" + c;
+    };
+  }
+
+  // =================================================================
+  // HOST (Windows PC)
+  // =================================================================
+  function startHost() {
+    show($("host"));
+    let code = store.get("ss-code");
+    if (!code) { code = newCode(); store.set("ss-code", code); }
+    const link = `${location.origin}${location.pathname}?w=${code}`;
+    $("shareLink").textContent = link.replace(/^https?:\/\//, "");
+    $("bigCode").textContent = code;
+    $("copyBtn").onclick = async () => {
+      try { await navigator.clipboard.writeText(link); $("copyBtn").textContent = "Copied"; }
+      catch { prompt("Copy this link:", link); }
+      setTimeout(() => $("copyBtn").textContent = "Copy", 1500);
+    };
+    $("newCode").onclick = e => { e.preventDefault(); store.set("ss-code", newCode()); location.reload(); };
+
+    let stream = null;
+    const viewers = new Map(); // peerId -> { conn, call }
+    let peer;
+
+    const setStatus = () => {
+      const n = [...viewers.values()].filter(v => v.conn.open).length;
+      const who = n === 0 ? "No one watching yet" : n === 1 ? "1 person watching" : `${n} people watching`;
+      $("hostStatus").textContent = stream ? `Live · ${who}` : `Ready · ${who}`;
+      $("hostDot").className = "dot " + (stream ? "live" : "on");
+      document.title = stream ? `● Live (${n}) · Screen Share` : "Screen Share";
+    };
+
+    function tuneSender(call) {
+      // Favor sharp text over frame rate, and allow a generous bitrate.
+      const pc = call.peerConnection;
+      if (!pc) return;
+      pc.getSenders().forEach(s => {
+        if (!s.track || s.track.kind !== "video") return;
+        const p = s.getParameters();
+        if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+        p.encodings[0].maxBitrate = 6_000_000;
+        p.degradationPreference = "maintain-resolution";
+        s.setParameters(p).catch(() => {});
+      });
+    }
+
+    function callViewer(id) {
+      const v = viewers.get(id);
+      if (!v || !stream || !v.conn.open) return;
+      if (v.call) v.call.close();
+      v.call = peer.call(id, stream);
+      v.call.on("iceStateChanged", st => { if (st === "connected") tuneSender(v.call); });
+      setTimeout(() => v.call && tuneSender(v.call), 1500);
+    }
+    const broadcast = msg => viewers.forEach(v => v.conn.open && v.conn.send(msg));
+
+    function connectPeer(attempt = 0) {
+      peer = new Peer(PREFIX + code, { debug: 1 });
+      peer.on("open", () => { $("startBtn").disabled = false; setStatus(); });
+      peer.on("connection", conn => {
+        conn.on("open", () => {
+          viewers.set(conn.peer, { conn, call: null });
+          conn.send({ type: stream ? "live" : "waiting" });
+          callViewer(conn.peer);
+          setStatus();
+        });
+        const drop = () => { const v = viewers.get(conn.peer); if (v && v.call) v.call.close(); viewers.delete(conn.peer); setStatus(); };
+        conn.on("close", drop); conn.on("error", drop);
+      });
+      peer.on("disconnected", () => { if (!peer.destroyed) peer.reconnect(); });
+      peer.on("error", err => {
+        if (err.type === "unavailable-id" && attempt < 10) {
+          // Old tab (or a just-reloaded one) still holds this ID; wait for the broker to free it.
+          $("hostStatus").textContent = "Reclaiming your link…";
+          peer.destroy(); setTimeout(() => connectPeer(attempt + 1), 3000);
+        } else if (err.type === "network" || err.type === "server-error") {
+          $("hostStatus").textContent = "Connection lost, retrying…";
+        } else if (err.type !== "peer-unavailable") {
+          console.warn(err);
+        }
+      });
+    }
+    connectPeer();
+
+    async function pickScreen() {
+      try {
+        const next = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 2560 }, height: { ideal: 1440 } },
+          audio: $("withAudio").checked,
+        });
+        const vt = next.getVideoTracks()[0];
+        if ("contentHint" in vt) vt.contentHint = "detail";
+        vt.addEventListener("ended", () => { if (stream === next) stopSharing(); });
+        if (stream) stream.getTracks().forEach(t => t.stop());
+        stream = next;
+        $("preview").srcObject = stream;
+        show($("preview")); show($("startBtn"), false); show($("liveRow"));
+        $("withAudio").disabled = true;
+        broadcast({ type: "live" });
+        viewers.forEach((_, id) => callViewer(id));
+        setStatus();
+      } catch (e) {
+        if (e.name !== "NotAllowedError") alert("Couldn't start sharing: " + e.message);
+      }
+    }
+    function stopSharing() {
+      if (stream) stream.getTracks().forEach(t => t.stop());
+      stream = null;
+      viewers.forEach(v => { if (v.call) v.call.close(); v.call = null; });
+      broadcast({ type: "waiting" });
+      $("preview").srcObject = null;
+      show($("preview"), false); show($("startBtn")); show($("liveRow"), false);
+      $("withAudio").disabled = false;
+      setStatus();
+    }
+    $("startBtn").onclick = pickScreen;
+    $("switchBtn").onclick = pickScreen;
+    $("stopBtn").onclick = stopSharing;
+    window.addEventListener("beforeunload", () => { broadcast({ type: "ended" }); peer && peer.destroy(); });
+  }
+
+  // =================================================================
+  // VIEWER (iPhone / iPad / Mac)
+  // =================================================================
+  function startViewer(code) {
+    show($("viewer"));
+    const video = $("remote"), viewer = $("viewer");
+    const overlay = (title, sub = "", spin = true) => {
+      show($("overlay"), !!title);
+      $("ovTitle").textContent = title || ""; $("ovSub").textContent = sub;
+      $("overlay").querySelector(".spinner").style.display = spin ? "" : "none";
+    };
+    overlay("Connecting…");
+
+    let peer, conn, retryTimer, wakeLock;
+    const keepAwake = async () => {
+      try { if ("wakeLock" in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.onrelease = () => wakeLock = null; } } catch {}
+    };
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && video.srcObject) keepAwake(); });
+
+    const tryPlay = () => video.play().then(() => show($("tapOverlay"), false)).catch(() => show($("tapOverlay")));
+    $("tapToPlay").onclick = () => { tryPlay(); keepAwake(); };
+
+    function connect() {
+      clearTimeout(retryTimer);
+      if (!peer || peer.destroyed) {
+        peer = new Peer({ debug: 1 });
+        peer.on("open", openConn);
+        peer.on("call", call => {
+          call.answer();
+          call.on("stream", s => {
+            video.srcObject = s;
+            const hasAudio = s.getAudioTracks().length > 0;
+            show($("soundBtn"), hasAudio);
+            overlay(null); show($("toolbar")); bumpToolbar();
+            tryPlay(); keepAwake();
+          });
+          call.on("close", () => { if (video.srcObject) { video.srcObject = null; overlay("Paused", "Waiting for Chris to share again…"); } });
+        });
+        peer.on("disconnected", () => { if (!peer.destroyed) peer.reconnect(); });
+        peer.on("error", err => {
+          if (err.type === "peer-unavailable") {
+            overlay("Not sharing right now", "This page will connect as soon as Chris opens the share page.");
+            retryTimer = setTimeout(openConn, 3000);
+          } else if (err.type === "network" || err.type === "server-error") {
+            overlay("Connection lost", "Retrying…");
+            retryTimer = setTimeout(() => { peer.destroy(); connect(); }, 3000);
+          }
+        });
+      } else openConn();
+    }
+    function openConn() {
+      if (conn) conn.close();
+      conn = peer.connect(PREFIX + code, { reliable: true });
+      conn.on("data", msg => {
+        if (msg.type === "waiting") { video.srcObject = null; show($("toolbar"), false); overlay("Connected", "Waiting for Chris to pick a screen…"); }
+        if (msg.type === "live" && !video.srcObject) overlay("Starting video…");
+        if (msg.type === "ended") { video.srcObject = null; show($("toolbar"), false); overlay("Sharing ended", "This page will reconnect automatically if he starts again."); }
+      });
+      conn.on("close", () => { show($("toolbar"), false); video.srcObject = null; overlay("Reconnecting…"); retryTimer = setTimeout(openConn, 3000); });
+    }
+    connect();
+
+    // ----- toolbar -----
+    let fadeTimer;
+    const bumpToolbar = () => {
+      $("toolbar").classList.remove("faded");
+      clearTimeout(fadeTimer);
+      fadeTimer = setTimeout(() => $("toolbar").classList.add("faded"), 3500);
+    };
+    viewer.addEventListener("pointerdown", bumpToolbar);
+    viewer.addEventListener("pointermove", e => { if (e.pointerType === "mouse") bumpToolbar(); });
+
+    $("fitBtn").onclick = () => { viewer.classList.remove("actual"); $("fitBtn").classList.add("on"); $("actualBtn").classList.remove("on"); };
+    $("actualBtn").onclick = () => { viewer.classList.add("actual"); $("actualBtn").classList.add("on"); $("fitBtn").classList.remove("on"); };
+    $("soundBtn").onclick = () => { video.muted = !video.muted; $("soundBtn").textContent = video.muted ? "Sound off" : "Sound on"; $("soundBtn").classList.toggle("on", !video.muted); tryPlay(); };
+    $("fsBtn").onclick = () => {
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      } else if (viewer.requestFullscreen) viewer.requestFullscreen().catch(() => {});
+      else if (viewer.webkitRequestFullscreen) viewer.webkitRequestFullscreen();
+      else if (video.webkitEnterFullscreen) video.webkitEnterFullscreen(); // iPhone Safari
+    };
+  }
+})();
+</script>
+</body>
+</html>
