@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Watch Sync",
+  "version": "1.0.0",
+  "description": "Private Teleparty-style sync for two: play, pause and skip together on Netflix, Disney+, Max, Hulu, Prime Video and more.",
+  "permissions": ["storage", "offscreen"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Watch Sync" },
+  "icons": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.netflix.com/*",
+        "*://*.disneyplus.com/*",
+        "*://*.max.com/*",
+        "*://*.hbomax.com/*",
+        "*://*.hulu.com/*",
+        "*://*.primevideo.com/*",
+        "*://*.amazon.com/*",
+        "*://*.youtube.com/*",
+        "*://*.peacocktv.com/*",
+        "*://*.paramountplus.com/*",
+        "*://*.crunchyroll.com/*",
+        "*://tv.apple.com/*",
+        "*://*.tubitv.com/*",
+        "*://*.pluto.tv/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["*://*.netflix.com/*"],
+      "js": ["netflix-main.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    }
+  ]
+}

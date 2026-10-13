@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Watch Sync</title>
+<link rel="icon" href="extension/icon48.png">
+<style>
+  :root { --bg:#0e0f12; --panel:#17191e; --line:#2a2d35; --text:#eceef2; --muted:#9095a1; --accent:#a78bfa; --ink:#140b2e; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 40px 16px 60px; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.01em; }
+  h2 { font-size: 17px; margin: 34px 0 10px; }
+  p, li { color: #c9ccd3; }
+  .muted { color: var(--muted); font-size: 14px; }
+  a { color: var(--accent); }
+  .dl { display: inline-flex; align-items: center; gap: 10px; margin: 18px 0 6px; background: var(--accent); color: var(--ink);
+    font-weight: 600; text-decoration: none; padding: 12px 20px; border-radius: 12px; }
+  ol { padding-left: 22px; } li { margin: 8px 0; }
+  code { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 14px; color: var(--text); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 4px 20px; margin-top: 12px; }
+  .sites { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; list-style: none; }
+  .sites li { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <p class="muted"><a href="./">Screen share</a> · <a href="party.html">Watch party</a></p>
+  <h1>Watch Sync</h1>
+  <p>Our own Teleparty: when one of us plays, pauses or skips, the other's video does the same. Each of us streams from our own account, so the picture is full quality with no lag.</p>
+  <a class="dl" href="watch-sync.zip" download>Download Watch Sync (.zip)</a>
+  <p class="muted">Works in Chrome or Edge on Windows and Mac. Not on iPhone or iPad.</p>
+
+  <h2>Works on</h2>
+  <ul class="sites"><li>Netflix</li><li>Disney+</li><li>Max</li><li>Hulu</li><li>Prime Video</li><li>YouTube</li><li>Peacock</li><li>Paramount+</li><li>Apple TV+</li><li>Tubi</li><li>Pluto TV</li><li>Crunchyroll*</li></ul>
+  <p class="muted">*Crunchyroll's player sits in a frame and may not sync reliably.</p>
+
+  <h2>Install (once, about a minute)</h2>
+  <div class="card">
+    <ol>
+      <li>Download the zip above and unzip it. On a Mac, double-click it; on Windows, right-click → <b>Extract All</b>.</li>
+      <li>Open <code>chrome://extensions</code> (or <code>edge://extensions</code>) in the address bar.</li>
+      <li>Turn on <b>Developer mode</b> (top-right in Chrome, left side in Edge).</li>
+      <li>Click <b>Load unpacked</b> and pick the unzipped <b>watch-sync</b> folder.</li>
+      <li>Click the puzzle-piece icon in the toolbar and pin <b>Watch Sync</b>.</li>
+    </ol>
+  </div>
+  <p class="muted">Keep the unzipped folder where it is; Chrome loads the extension from it. Chrome may show a "developer mode extensions" notice on startup. That's normal for extensions you install yourself.</p>
+
+  <h2>Using it</h2>
+  <div class="card">
+    <ol>
+      <li>Both of you open the same title on the same service.</li>
+      <li><b>One person</b> clicks the Watch Sync icon → <b>Start a party on this tab</b> and sends the 6-letter code.</li>
+      <li><b>The other</b> clicks the icon on their tab, types the code → <b>Join</b>. You'll both see "Synced".</li>
+      <li>Watch. Play, pause and skipping now happen for both of you. A little message tells you who did what.</li>
+    </ol>
+  </div>
+  <p class="muted">If you're on different episodes, a popup offers to open whatever the other person is watching. If the video ever drifts, the joiner is quietly nudged back in line.</p>
+</main>
+</body>
+</html>
