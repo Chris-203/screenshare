@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#0e0f12; --panel:#17191e; --line:#2a2d35; --text:#eceef2; --muted:#9095a1; --accent:#a78bfa; --ink:#140b2e; --ok:#34d399; }
+  * { box-sizing: border-box; }
+  body { margin: 0; width: 300px; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .wrap { padding: 18px; }
+  h1 { font-size: 16px; margin: 0 0 2px; }
+  .muted { color: var(--muted); font-size: 12.5px; }
+  .hidden { display: none !important; }
+  input { font: inherit; width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+  button { font: inherit; width: 100%; cursor: pointer; border: 0; border-radius: 9px; padding: 10px; background: var(--line); color: var(--text); }
+  button.primary { background: var(--accent); color: var(--ink); font-weight: 600; }
+  button:hover { filter: brightness(1.12); }
+  .gap > * + * { margin-top: 10px; }
+  .row { display: flex; gap: 8px; } .row > * { flex: 1; } .row > button { flex: none; width: auto; padding: 10px 14px; }
+  .divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin: 14px 0; }
+  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .code { font: 600 28px/1 ui-monospace, "SF Mono", Consolas, monospace; letter-spacing: .18em; text-align: center; padding: 14px 0 8px; user-select: all; }
+  .status { display: flex; align-items: center; justify-content: center; gap: 7px; color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(52,211,153,.2); }
+  .err { color: #fca5a5; font-size: 12.5px; }
+  .code-in { text-transform: uppercase; letter-spacing: .14em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Watch Sync</h1>
+  <p class="muted" style="margin:0 0 14px">Play, pause and skip together. Each of you uses your own account.</p>
+
+  <!-- not in a party -->
+  <div id="idle" class="gap hidden">
+    <input id="name" placeholder="Your name" maxlength="20">
+    <button id="start" class="primary">Start a party on this tab</button>
+    <div class="divider">or join</div>
+    <div class="row"><input id="code" class="code-in" placeholder="Code" maxlength="6" autocomplete="off"><button id="join" class="primary">Join</button></div>
+  </div>
+
+  <!-- in a party -->
+  <div id="inParty" class="hidden">
+    <div class="muted" style="text-align:center" id="codeHint">Send this code to your partner</div>
+    <div class="code" id="codeOut"></div>
+    <div class="status"><span class="dot" id="dot"></span><span id="stat"></span></div>
+    <div class="gap">
+      <button id="bind" class="hidden">Sync this tab instead</button>
+      <button id="copy">Copy code</button>
+      <button id="leave">Leave party</button>
+    </div>
+  </div>
+
+  <p class="err hidden" id="err"></p>
+</div>
+<script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+name: Build Watch Sync extension
+
+on:
+  push:
+    branches: [main]
+    paths: ["extension/**", ".github/workflows/build-extension.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bundle PeerJS (extensions can't load code from the web)
+        run: curl -fsSL https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js -o extension/peerjs.min.js
+
+      - name: Zip the extension
+        run: |
+          rm -f watch-sync.zip
+          cd extension && zip -r -X ../watch-sync.zip . -x '.*'
+
+      - name: Commit the build
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
+          git add extension/peerjs.min.js watch-sync.zip
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Build extension zip"
+          git push

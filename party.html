@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0e0f12">
+<title>Watch Party</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect x='6' y='12' width='52' height='36' rx='6' fill='%23a78bfa'/><path d='M27 22v16l13-8z' fill='%23140b2e'/></svg>">
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+  :root {
+    --bg: #0e0f12; --panel: #17191e; --line: #2a2d35; --text: #eceef2;
+    --muted: #9095a1; --accent: #a78bfa; --accent-ink: #140b2e; --ok: #34d399; --danger: #f87171;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  .hidden { display: none !important; }
+  a { color: var(--accent); }
+  button { font: inherit; cursor: pointer; border: 0; border-radius: 10px; padding: 11px 16px;
+    background: var(--line); color: var(--text); transition: filter .15s; }
+  button:hover { filter: brightness(1.15); }
+  button:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+  button.primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  input[type=text], input[type=url] { font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    border-radius: 10px; padding: 11px 14px; width: 100%; min-width: 0; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
+  .page { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+  .card { width: 100%; max-width: 440px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 28px 24px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0 0 22px; font-size: 15px; }
+  .note { color: var(--muted); font-size: 13px; }
+  .row { display: flex; gap: 10px; align-items: center; }
+  .stack > * + * { margin-top: 12px; }
+  .divider { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; margin: 22px 0; }
+  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .code-in { letter-spacing: .14em; text-transform: uppercase; }
+
+  /* top bar */
+  .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .status { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 0 4px rgba(52,211,153,.18); }
+  .linkbox { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 5px 5px 5px 12px; max-width: 100%; }
+  .linkbox code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted); }
+  .linkbox b { font: 600 15px ui-monospace, "SF Mono", Consolas, monospace; letter-spacing: .14em; }
+  .linkbox button { padding: 7px 12px; font-size: 14px; }
+
+  /* source picker */
+  .tabs { display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 4px; width: fit-content; max-width: 100%; overflow-x: auto; }
+  .tabs button { background: transparent; padding: 8px 14px; font-size: 14px; white-space: nowrap; }
+  .tabs button.on { background: var(--line); }
+  .src { margin: 12px 0 14px; }
+  .src form { display: flex; gap: 8px; }
+  .filepick { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .filepick label { display: inline-block; }
+
+  /* stage */
+  .stage { position: relative; width: 100%; aspect-ratio: 16/9; background: #000; border-radius: 12px; overflow: hidden; }
+  .stage video, .stage iframe, .stage #yt { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+  .stage .empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted); padding: 20px; }
+  .opts { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; margin-top: 12px; color: var(--muted); font-size: 14px; }
+  .opts label { display: flex; gap: 8px; align-items: center; }
+
+  /* viewer */
+  body.viewing .wrap { max-width: none; padding: 0; }
+  body.viewing .stage { border-radius: 0; aspect-ratio: auto; height: 100vh; height: 100dvh; }
+  .vbar { position: fixed; top: max(10px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); z-index: 5;
+    display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; font-size: 13px; color: var(--muted);
+    background: rgba(23,25,30,.82); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid var(--line);
+    transition: opacity .3s; white-space: nowrap; max-width: calc(100% - 24px); }
+  .vbar.faded { opacity: 0; pointer-events: none; }
+  .vbar button { padding: 4px 10px; font-size: 13px; border-radius: 999px; }
+  .controls { position: fixed; left: 50%; bottom: max(14px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 5;
+    width: min(680px, calc(100% - 24px)); display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    background: rgba(23,25,30,.86); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--line); border-radius: 14px; transition: opacity .3s; }
+  .controls.faded { opacity: 0; pointer-events: none; }
+  .controls button { padding: 8px 12px; background: transparent; font-size: 15px; }
+  .controls input[type=range] { flex: 1; accent-color: var(--accent); min-width: 0; }
+  .controls .time { font: 13px ui-monospace, "SF Mono", Consolas, monospace; color: var(--muted); white-space: nowrap; }
+  .overlay { position: absolute; inset: 0; z-index: 4; display: grid; place-items: center; text-align: center; padding: 24px; color: var(--muted); background: rgba(0,0,0,.55); }
+  .overlay .big { color: var(--text); font-size: 19px; margin-bottom: 6px; }
+  .overlay.passthrough { pointer-events: none; background: transparent; }
+  .spinner { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--accent);
+    border-radius: 50%; margin: 0 auto 16px; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .banner { position: absolute; left: 50%; bottom: 18%; transform: translateX(-50%); z-index: 4; pointer-events: none;
+    background: var(--accent); color: var(--accent-ink); font-weight: 600; padding: 10px 16px; border-radius: 999px; font-size: 14px; }
+
+  .toast { position: fixed; top: 16px; left: 50%; transform: translateX(-50%) translateY(-120%); z-index: 20;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 9px 16px; font-size: 14px;
+    transition: transform .25s; pointer-events: none; }
+  .toast.show { transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<!-- ============ HOME ============ -->
+<section id="home" class="page hidden">
+  <div class="card">
+    <h1>Watch Party</h1>
+    <p class="sub">Watch YouTube, video links or your own files together, perfectly in sync.</p>
+    <button id="goHost" class="primary" style="width:100%">Start a party</button>
+    <div class="divider">or join</div>
+    <form id="joinForm" class="row">
+      <input id="codeInput" type="text" class="code-in" maxlength="6" placeholder="Code" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      <button class="primary" style="flex:none">Join</button>
+    </form>
+    <p class="note" style="margin-top:18px"><a href="./">← Screen share</a></p>
+  </div>
+</section>
+
+<!-- ============ HOST ============ -->
+<section id="host" class="wrap hidden">
+  <div class="bar">
+    <div class="status"><span id="hostDot" class="dot"></span><span id="hostStatus">Connecting…</span></div>
+    <div class="linkbox"><code id="shareLink">…</code><b id="codeLabel"></b><button id="copyBtn">Copy link</button></div>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <button data-tab="yt" class="on">YouTube</button>
+    <button data-tab="url">Video link</button>
+    <button data-tab="file">File on this PC</button>
+  </div>
+  <div class="src">
+    <form id="ytForm" data-pane="yt"><input id="ytInput" type="url" placeholder="Paste a YouTube link"><button class="primary">Load</button></form>
+    <form id="urlForm" data-pane="url" class="hidden"><input id="urlInput" type="url" placeholder="Paste a direct .mp4 / .webm link"><button class="primary">Load</button></form>
+    <div data-pane="file" class="hidden">
+      <div class="filepick">
+        <label><input id="fileInput" type="file" accept="video/*,.mkv,.mov,.m4v" class="hidden"><button type="button" class="primary" onclick="document.getElementById('fileInput').click()">Choose video file</button></label>
+        <span class="note" id="fileNote">Streams live to her. If she has the same file, she can play her copy instead for perfect quality.</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="stage" id="hostStage">
+    <div class="empty" id="hostEmpty">Pick something to watch. Whoever's in the party will see it load right away.</div>
+  </div>
+  <div class="opts">
+    <label><input type="checkbox" id="waitOpt" checked> Pause for everyone if someone is buffering</label>
+    <span id="syncInfo"></span>
+  </div>
+</section>
+
+<!-- ============ VIEWER ============ -->
+<section id="viewer" class="wrap hidden">
+  <div class="stage" id="viewStage">
+    <div id="vOverlay" class="overlay">
+      <div>
+        <div class="spinner" id="vSpin"></div>
+        <div class="big" id="vTitle">Watch Party</div>
+        <div id="vSub"></div>
+        <button id="joinBtn" class="primary hidden" style="margin-top:18px">Tap to join</button>
+      </div>
+    </div>
+    <div id="vBanner" class="banner hidden">Tap the video once to start</div>
+  </div>
+  <div class="vbar" id="vbar">
+    <span id="vDot" class="dot"></span><span id="vStatus">Connecting…</span>
+    <label id="haveFileWrap" class="hidden"><input id="haveFile" type="file" accept="video/*,.mkv,.mov,.m4v" class="hidden"><button type="button" onclick="document.getElementById('haveFile').click()">I have this file</button></label>
+  </div>
+  <div class="controls hidden" id="sControls">
+    <button id="sPlay">▶</button>
+    <input id="sSeek" type="range" min="0" max="100" step="0.1" value="0">
+    <span class="time" id="sTime">0:00 / 0:00</span>
+    <button id="sFs">⛶</button>
+  </div>
+</section>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  // ------------------------------------------------------------------ constants & helpers
+  const PREFIX = "chris203-wp-";
+  const HOST_NAME = "Chris";
+  const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  const $ = id => document.getElementById(id);
+  const show = (el, on = true) => el.classList.toggle("hidden", !on);
+  const now = () => performance.now();
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  };
+  const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), b => ALPHABET[b % ALPHABET.length]).join("");
+  const cleanCode = s => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+  const fmt = s => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2, "0")}:${x}` : `${m}:${x}`; };
+  let toastTimer;
+  const toast = msg => { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2600); };
+
+  function ytId(url) {
+    const m = String(url).match(/(?:youtu\.be\/|v=|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/);
+    return m ? m[1] : (/^[A-Za-z0-9_-]{11}$/.test(url) ? url : null);
+  }
+  function ytStart(url) { const m = String(url).match(/[?&#]t=(\d+)/); return m ? +m[1] : 0; }
+
+  let ytApi;
+  const loadYT = () => ytApi ||= new Promise(res => {
+    window.onYouTubeIframeAPIReady = res;
+    const s = document.createElement("script"); s.src = "https://www.youtube.com/iframe_api"; document.head.append(s);
+  });
+
+  // ------------------------------------------------------------------ player adapters
+  // Every source gets the same small interface so the sync logic doesn't care what's playing.
+  function htmlAdapter(video, hooks) {
+    const A = {
+      kind: "html", el: video, lastOwnSeek: 0, lastOwnPlay: 0,
+      time: () => video.currentTime || 0,
+      dur: () => isFinite(video.duration) ? video.duration : 0,
+      paused: () => video.paused,
+      buffering: () => !video.paused && video.readyState < 3,
+      ready: () => video.readyState >= 3,
+      play: () => { A.lastOwnPlay = now(); return video.play().catch(e => hooks.blocked && hooks.blocked(e)); },
+      pause: () => video.pause(),
+      seek: t => { A.lastOwnSeek = now(); try { video.currentTime = Math.max(0, t); } catch {} },
+      rate: r => { if (Math.abs(video.playbackRate - r) > 0.001) video.playbackRate = r; },
+      destroy: () => { off(); video.pause(); video.removeAttribute("src"); video.load(); show(video, false); },
+    };
+    const evs = ["play", "pause", "seeked", "waiting", "playing", "loadedmetadata", "ended"];
+    const fn = e => hooks.event && hooks.event(e.type);
+    evs.forEach(e => video.addEventListener(e, fn));
+    const off = () => evs.forEach(e => video.removeEventListener(e, fn));
+    return A;
+  }
+
+  async function ytAdapter(container, id, start, hooks) {
+    await loadYT();
+    const host = document.createElement("div"); host.id = "yt"; container.append(host);
+    let state = -1;
+    const A = {
+      kind: "yt", lastOwnSeek: 0, lastOwnPlay: 0, player: null,
+      time: () => (A.player && A.player.getCurrentTime) ? A.player.getCurrentTime() : 0,
+      dur: () => (A.player && A.player.getDuration) ? A.player.getDuration() : 0,
+      paused: () => state !== 1 && state !== 3,
+      buffering: () => state === 3,
+      ready: () => state === 1 || state === 2 || state === 5,
+      state: () => state,
+      play: () => { A.lastOwnPlay = now(); A.player.playVideo(); },
+      pause: () => A.player.pauseVideo(),
+      seek: t => { A.lastOwnSeek = now(); A.player.seekTo(Math.max(0, t), true); },
+      rate: () => {},
+      destroy: () => { try { A.player.destroy(); } catch {} const el = document.getElementById("yt"); el && el.remove(); },
+    };
+    await new Promise(res => {
+      A.player = new YT.Player(host, {
+        videoId: id,
+        playerVars: { playsinline: 1, rel: 0, modestbranding: 1, start: Math.floor(start || 0) },
+        events: {
+          onReady: res,
+          onStateChange: e => { state = e.data; hooks.event && hooks.event("yt" + e.data); },
+        },
+      });
+    });
+    return A;
+  }
+
+  // ------------------------------------------------------------------ routing
+  const params = new URLSearchParams(location.search);
+  const roomCode = cleanCode(params.get("r"));
+  if (roomCode.length === 6) startViewer(roomCode);
+  else if (params.has("host")) startHost();
+  else {
+    show($("home"));
+    $("goHost").onclick = () => { history.replaceState(null, "", "?host"); show($("home"), false); startHost(); };
+    $("joinForm").onsubmit = e => { e.preventDefault(); const c = cleanCode($("codeInput").value); if (c.length === 6) location.search = "?r=" + c; };
+  }
+
+  // ==================================================================
+  // HOST — the source of truth for what's playing and where
+  // ==================================================================
+  function startHost() {
+    show($("host"));
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    let code = store.get("wp-code");
+    if (!code) { code = newCode(); store.set("wp-code", code); }
+    const link = `${location.origin}${location.pathname}?r=${code}`;
+    $("shareLink").textContent = link.replace(/^https?:\/\//, "").replace(/\?r=.*/, "?r=");
+    $("codeLabel").textContent = code;
+    $("copyBtn").onclick = async () => {
+      try { await navigator.clipboard.writeText(link); $("copyBtn").textContent = "Copied"; }
+      catch { prompt("Copy this link:", link); }
+      setTimeout(() => $("copyBtn").textContent = "Copy link", 1500);
+    };
+
+    // Shared state, mirrored to every viewer.
+    // t = media time at host-clock instant `at`; viewers extrapolate from it.
+    const S = { v: 0, kind: null, src: null, name: null, size: 0, title: "", paused: true, t: 0, at: Date.now(), dur: 0 };
+    let A = null;                 // current adapter
+    let stream = null;            // captureStream() for local files
+    let autoPaused = false;
+    const stalled = new Set();
+    const viewers = new Map();    // peerId -> { conn, call, wantsStream }
+    let peer;
+
+    const stage = $("hostStage");
+    const hv = document.createElement("video");
+    hv.controls = true; hv.playsInline = true; hv.preload = "auto"; show(hv, false);
+    stage.append(hv);
+
+    const send = (v, msg) => { if (v.conn.open) v.conn.send(msg); };
+    const broadcast = msg => viewers.forEach(v => send(v, msg));
+    const anchor = () => {
+      if (!A) return;
+      S.paused = A.paused() || A.buffering();
+      S.t = A.time(); S.at = Date.now(); S.dur = A.dur();
+    };
+    const pushState = () => { S.v++; broadcast({ type: "state", s: S }); };
+    const sync = () => { anchor(); pushState(); };
+
+    const setStatus = () => {
+      const n = [...viewers.values()].filter(v => v.conn.open).length;
+      $("hostStatus").textContent = n === 0 ? "Waiting for her to join" : n === 1 ? "1 person in the party" : `${n} people in the party`;
+      $("hostDot").className = "dot " + (n ? "on" : "");
+      $("syncInfo").textContent = stalled.size ? "Waiting for her video to load…" : "";
+    };
+
+    // ---- tabs
+    $("tabs").onclick = e => {
+      const b = e.target.closest("button"); if (!b) return;
+      [...$("tabs").children].forEach(x => x.classList.toggle("on", x === b));
+      document.querySelectorAll("[data-pane]").forEach(p => show(p, p.dataset.pane === b.dataset.tab));
+    };
+    if (isMobile) $("fileNote").textContent = "Live streaming a file needs Chrome or Edge on a computer.";
+
+    // ---- loading sources
+    function clearSource() {
+      if (A) A.destroy();
+      A = null;
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      viewers.forEach(v => { if (v.call) v.call.close(); v.call = null; });
+      autoPaused = false; stalled.clear();
+    }
+    const hooks = {
+      event: type => {
+        // Host's own player changed: re-anchor and tell everyone right away.
+        if (type === "play" || type === "yt1") { if (autoPaused) { autoPaused = false; } }
+        if (type === "loadedmetadata" && S.kind === "file") ensureStream();
+        sync();
+      },
+      blocked: () => toast("Click play to start"),
+    };
+
+    async function loadYouTube(url) {
+      const id = ytId(url); if (!id) return toast("That doesn't look like a YouTube link");
+      clearSource(); show($("hostEmpty"), false);
+      Object.assign(S, { kind: "yt", src: id, name: null, size: 0, title: "YouTube", paused: true, t: ytStart(url), at: Date.now() });
+      pushState();
+      A = await ytAdapter(stage, id, S.t, hooks);
+      sync();
+    }
+    function loadUrl(url) {
+      if (!/^https?:\/\//.test(url)) return toast("Paste a full http(s) link");
+      clearSource(); show($("hostEmpty"), false);
+      Object.assign(S, { kind: "url", src: url, name: null, size: 0, title: url.split("/").pop().split("?")[0], paused: true, t: 0, at: Date.now() });
+      hv.src = url; show(hv);
+      A = htmlAdapter(hv, hooks);
+      pushState();
+    }
+    function loadFile(file) {
+      clearSource(); show($("hostEmpty"), false);
+      Object.assign(S, { kind: "file", src: null, name: file.name, size: file.size, title: file.name.replace(/\.[^.]+$/, ""), paused: true, t: 0, at: Date.now() });
+      hv.src = URL.createObjectURL(file); show(hv);
+      A = htmlAdapter(hv, hooks);
+      pushState();
+    }
+    $("ytForm").onsubmit = e => { e.preventDefault(); loadYouTube($("ytInput").value.trim()); };
+    $("urlForm").onsubmit = e => { e.preventDefault(); loadUrl($("urlInput").value.trim()); };
+    $("fileInput").onchange = e => { const f = e.target.files[0]; if (f) loadFile(f); e.target.value = ""; };
+
+    // ---- live stream of a local file (for viewers who don't have it)
+    function ensureStream() {
+      if (stream || S.kind !== "file") return;
+      const cap = hv.captureStream || hv.mozCaptureStream;
+      if (!cap) { toast("This browser can't stream files. Use Chrome or Edge."); return; }
+      stream = cap.call(hv);
+      let t;
+      stream.addEventListener("addtrack", () => { clearTimeout(t); t = setTimeout(callStreamViewers, 300); });
+      callStreamViewers();
+    }
+    function tune(call) {
+      const pc = call && call.peerConnection; if (!pc) return;
+      pc.getSenders().forEach(s => {
+        if (!s.track) return;
+        const p = s.getParameters();
+        if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+        if (s.track.kind === "video") { p.encodings[0].maxBitrate = 8_000_000; p.degradationPreference = "balanced"; if ("contentHint" in s.track) s.track.contentHint = "motion"; }
+        else { p.encodings[0].maxBitrate = 192_000; }
+        s.setParameters(p).catch(() => {});
+      });
+    }
+    function callViewer(id) {
+      const v = viewers.get(id);
+      if (!v || !v.conn.open || !v.wantsStream || !stream || !stream.getTracks().length) return;
+      if (v.call) v.call.close();
+      v.call = peer.call(id, stream);
+      setTimeout(() => tune(v.call), 800);
+      setTimeout(() => tune(v.call), 3000);
+    }
+    const callStreamViewers = () => viewers.forEach((_, id) => callViewer(id));
+
+    // ---- commands from viewers
+    function onCmd(c) {
+      if (!A) return;
+      if (c.action === "play") { autoPaused = false; if (typeof c.t === "number" && Math.abs(A.time() - c.t) > 0.3) A.seek(c.t); A.play(); }
+      if (c.action === "pause") { A.pause(); if (typeof c.t === "number" && Math.abs(A.time() - c.t) > 0.3) A.seek(c.t); }
+      if (c.action === "seek") { A.seek(c.t); }
+      // Optimistic state so everyone reacts immediately; the player's own events will refine it.
+      if (c.action === "play") S.paused = false;
+      if (c.action === "pause") S.paused = true;
+      if (typeof c.t === "number") S.t = c.t;
+      S.at = Date.now();
+      pushState();
+      toast(c.action === "play" ? "She pressed play" : c.action === "pause" ? "She paused" : `She skipped to ${fmt(c.t)}`);
+    }
+    function onStall(id, isStalled) {
+      if (isStalled) stalled.add(id); else stalled.delete(id);
+      if (isStalled && $("waitOpt").checked && A && !A.paused()) { autoPaused = true; A.pause(); }
+      if (!stalled.size && autoPaused && A) { autoPaused = false; A.play(); }
+      setStatus();
+    }
+
+    // ---- peer
+    function connectPeer(attempt = 0) {
+      peer = new Peer(PREFIX + code, { debug: 1 });
+      peer.on("open", setStatus);
+      peer.on("connection", conn => {
+        conn.on("open", () => {
+          viewers.set(conn.peer, { conn, call: null, wantsStream: true });
+          anchor(); send(viewers.get(conn.peer), { type: "state", s: S });
+          callViewer(conn.peer);
+          setStatus(); toast("She joined");
+        });
+        conn.on("data", m => {
+          if (!m || typeof m !== "object") return;
+          if (m.type === "ping") conn.send({ type: "pong", c: m.c, h: Date.now() });
+          else if (m.type === "cmd") onCmd(m);
+          else if (m.type === "stall") onStall(conn.peer, true);
+          else if (m.type === "ready") onStall(conn.peer, false);
+          else if (m.type === "want-stream") {
+            const v = viewers.get(conn.peer); if (!v) return;
+            v.wantsStream = !!m.on;
+            if (v.wantsStream) callViewer(conn.peer); else if (v.call) { v.call.close(); v.call = null; }
+          }
+        });
+        const drop = () => { const v = viewers.get(conn.peer); if (v && v.call) v.call.close(); viewers.delete(conn.peer); onStall(conn.peer, false); setStatus(); };
+        conn.on("close", drop); conn.on("error", drop);
+      });
+      peer.on("disconnected", () => { if (!peer.destroyed) peer.reconnect(); });
+      peer.on("error", err => {
+        if (err.type === "unavailable-id" && attempt < 10) {
+          $("hostStatus").textContent = "Reclaiming your link…";
+          peer.destroy(); setTimeout(() => connectPeer(attempt + 1), 3000);
+        } else if (err.type === "network" || err.type === "server-error") {
+          $("hostStatus").textContent = "Connection lost, retrying…";
+        }
+      });
+    }
+    connectPeer();
+
+    // Heartbeat keeps everyone anchored even if a message is missed.
+    setInterval(() => { if (A) sync(); }, 1000);
+    window.addEventListener("beforeunload", () => { broadcast({ type: "ended" }); peer && peer.destroy(); });
+  }
+
+  // ==================================================================
+  // VIEWER — follows the host, can also control playback
+  // ==================================================================
+  function startViewer(code) {
+    document.body.classList.add("viewing");
+    show($("viewer"));
+    const stage = $("viewStage");
+
+    // Reused media elements (iOS only lets elements play with sound once "blessed" by a tap).
+    const pv = document.createElement("video");    // synced local playback (url / her own file)
+    pv.playsInline = true; pv.controls = true; pv.preload = "auto"; show(pv, false);
+    const sv = document.createElement("video");    // live stream from host
+    sv.playsInline = true; sv.autoplay = true; show(sv, false);
+    stage.prepend(pv, sv);
+
+    let S = null, A = null, mode = null;           // mode: 'sync' | 'stream'
+    let myFileUrl = null, myFileKey = null;
+    let joined = false, peer, conn, retryTimer;
+    let offset = 0, bestRtt = Infinity;             // hostClock ≈ Date.now() + offset
+    let pendingUntil = 0, queuedState = null;
+    let bufferingSince = 0, stallSent = false;
+    let lastTick = null, loadToken = 0;
+    const hostNow = () => Date.now() + offset;
+    const expected = () => !S ? 0 : S.paused ? S.t : S.t + (hostNow() - S.at) / 1000;
+
+    const overlay = (title, sub = "", { spin = true, join = false } = {}) => {
+      show($("vOverlay"), !!title);
+      $("vTitle").textContent = title || ""; $("vSub").textContent = sub;
+      show($("vSpin"), spin); show($("joinBtn"), join);
+    };
+    const status = (txt, on) => { $("vStatus").textContent = txt; $("vDot").className = "dot " + (on ? "on" : ""); };
+
+    overlay("Connecting…");
+
+    // ---- join gate (unlocks sound on iPhone/iPad)
+    $("joinBtn").onclick = () => {
+      joined = true;
+      [pv, sv].forEach(v => { const p = v.play(); p && p.catch(() => {}); });
+      overlay(null);
+      applySource(true);
+    };
+
+    // ---- clock sync (NTP-style: keep the lowest-latency sample)
+    function ping() { if (conn && conn.open) conn.send({ type: "ping", c: Date.now() }); }
+    function onPong(m) {
+      const t = Date.now(), rtt = t - m.c;
+      if (rtt <= bestRtt * 1.5 || rtt < 40) { offset = m.h + rtt / 2 - t; bestRtt = Math.min(bestRtt, rtt); }
+    }
+    setInterval(() => { bestRtt *= 1.05; ping(); }, 5000);
+
+    // ---- sending commands
+    function cmd(action, t) {
+      if (!conn || !conn.open) return;
+      conn.send({ type: "cmd", action, t });
+      if (S) {
+        if (action === "play") S.paused = false;
+        if (action === "pause") S.paused = true;
+        if (typeof t === "number") S.t = t;
+        S.at = hostNow();
+      }
+      pendingUntil = now() + 900;   // ignore heartbeats already in flight
+    }
+
+    // ---- building the right player for the host's source
+    function fileKey(s) { return s && s.name ? `${s.name}|${s.size}` : null; }
+    async function applySource(force) {
+      if (!S || !joined) return;
+      const key = S.kind === "yt" ? "yt:" + S.src : S.kind === "url" ? "url:" + S.src : S.kind === "file" ? "file:" + fileKey(S) + (myFileKey === fileKey(S) ? ":mine" : ":stream") : "none";
+      if (!force && key === applySource.key) return;
+      applySource.key = key;
+      const token = ++loadToken;
+      if (A) A.destroy(); A = null; lastTick = null;
+      show(pv, false); show(sv, false); show($("sControls"), false); show($("vBanner"), false);
+      show($("haveFileWrap"), S.kind === "file" && myFileKey !== fileKey(S));
+      mode = null;
+
+      if (!S.kind) { overlay("Connected", `Waiting for ${HOST_NAME} to pick something…`); return; }
+      overlay(null);
+      if (S.kind === "yt") {
+        mode = "sync";
+        const a = await ytAdapter(stage, S.src, expected(), viewerHooks);
+        if (token !== loadToken) return a.destroy();
+        A = a;
+      } else if (S.kind === "url" || (S.kind === "file" && myFileKey === fileKey(S))) {
+        mode = "sync";
+        pv.src = S.kind === "url" ? S.src : myFileUrl; show(pv);
+        A = htmlAdapter(pv, viewerHooks);
+      } else if (S.kind === "file") {
+        mode = "stream";
+        show(sv); show($("sControls"));
+        if (!sv.srcObject) overlay("Starting video…", `The picture appears once ${HOST_NAME} presses play.`);
+        if (conn && conn.open) conn.send({ type: "want-stream", on: true });
+      }
+      reconcile();
+    }
+
+    const viewerHooks = {
+      blocked: () => { overlay("Tap to play", "", { spin: false, join: true }); joined = false; },
+      event: type => {
+        if (!A || !S || mode !== "sync") return;
+        const t = A.time();
+        // Only report changes that differ from shared state, so our own corrections never echo back.
+        // (YouTube can auto-start after a programmatic seek; don't mistake that for her pressing play.)
+        if ((type === "play" || (type === "yt1" && now() - A.lastOwnSeek > 1500)) && S.paused) cmd("play", t);
+        if ((type === "pause" || type === "yt2") && !S.paused && !(A.el && A.el.ended) && now() - A.lastOwnPlay > 1500) cmd("pause", t);
+        if (type === "seeked" && now() - A.lastOwnSeek > 800) cmd("seek", t);
+        if (type === "yt1" || type === "playing") show($("vBanner"), false);
+      },
+    };
+
+    // ---- the sync loop
+    function reconcile() {
+      if (!A || !S || mode !== "sync") return;
+      const t = now(), cur = A.time(), exp = expected();
+
+      // YouTube has no seek event: detect a user scrub as a time jump we didn't cause.
+      if (A.kind === "yt" && lastTick && !A.buffering()) {
+        const advanced = cur - lastTick.cur, elapsed = (t - lastTick.t) / 1000;
+        if (Math.abs(advanced - (A.paused() ? 0 : elapsed)) > 2 && t - A.lastOwnSeek > 1500) { lastTick = { cur, t }; cmd("seek", cur); return; }
+      }
+      lastTick = { cur, t };
+
+      // Buffering → tell host so it can pause everyone.
+      if (!S.paused && A.buffering()) { bufferingSince ||= t; if (!stallSent && t - bufferingSince > 1200) { stallSent = true; conn && conn.send({ type: "stall" }); } }
+      else bufferingSince = 0;
+      if (stallSent && A.ready() && !A.buffering()) { stallSent = false; conn && conn.send({ type: "ready" }); }
+
+      if (S.paused) {
+        if (!A.paused()) A.pause();
+        const notStarted = A.kind === "yt" && (A.state() === -1 || A.state() === 5);
+        if (!notStarted && Math.abs(cur - S.t) > 0.25) A.seek(S.t);
+        A.rate(1);
+        return;
+      }
+      if (A.paused()) {
+        if (Math.abs(cur - exp) > 0.25) A.seek(exp);
+        A.play();
+        if (A.kind === "yt") setTimeout(() => { if (A && A.kind === "yt" && S && !S.paused && A.paused()) show($("vBanner")); }, 1800);
+        return;
+      }
+      if (A.buffering()) return;
+      const drift = cur - exp;
+      const hard = A.kind === "yt" ? 0.6 : 0.4;
+      if (Math.abs(drift) > hard) { A.seek(exp + (A.kind === "yt" ? 0.12 : 0.03)); A.rate(1); }
+      else if (A.kind === "html" && Math.abs(drift) > 0.025) A.rate(1 - Math.max(-0.06, Math.min(0.06, drift * 0.5)));  // invisible speed nudge
+      else A.rate(1);
+    }
+    setInterval(reconcile, 250);
+
+    // ---- stream-mode controls
+    let dragging = false;
+    $("sSeek").addEventListener("input", () => { dragging = true; $("sTime").textContent = `${fmt(+$("sSeek").value)} / ${fmt(S && S.dur)}`; });
+    $("sSeek").addEventListener("change", () => { dragging = false; cmd("seek", +$("sSeek").value); });
+    $("sPlay").onclick = () => { if (!S) return; cmd(S.paused ? "play" : "pause", expected()); renderStreamUI(); };
+    $("sFs").onclick = () => {
+      const el = stage;
+      if (document.fullscreenElement || document.webkitFullscreenElement) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      else if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      else if (sv.webkitEnterFullscreen) sv.webkitEnterFullscreen();
+    };
+    function renderStreamUI() {
+      if (mode !== "stream" || !S) return;
+      $("sPlay").textContent = S.paused ? "▶" : "❚❚";
+      $("sSeek").max = S.dur || 0;
+      if (!dragging) { $("sSeek").value = expected(); $("sTime").textContent = `${fmt(expected())} / ${fmt(S.dur)}`; }
+    }
+    setInterval(renderStreamUI, 250);
+
+    // ---- "I have this file too"
+    $("haveFile").onchange = e => {
+      const f = e.target.files[0]; e.target.value = ""; if (!f || !S) return;
+      if (myFileUrl) URL.revokeObjectURL(myFileUrl);
+      myFileUrl = URL.createObjectURL(f);
+      myFileKey = fileKey(S);   // trust her pick, but warn if it doesn't look like the same file
+      if (f.size !== S.size) toast("Heads up: this file isn't identical, timing may differ slightly");
+      if (conn && conn.open) conn.send({ type: "want-stream", on: false });
+      sv.srcObject = null;
+      applySource(true);
+    };
+
+    // ---- auto-hide chrome
+    let fadeT;
+    const bump = () => { $("vbar").classList.remove("faded"); $("sControls").classList.remove("faded"); clearTimeout(fadeT);
+      fadeT = setTimeout(() => { if (mode) { $("vbar").classList.add("faded"); $("sControls").classList.add("faded"); } }, 3500); };
+    document.addEventListener("pointerdown", bump); document.addEventListener("pointermove", e => e.pointerType === "mouse" && bump());
+
+    // ---- connection
+    function onState(s) {
+      if (now() < pendingUntil) { queuedState = s; return; }
+      S = s; queuedState = null;
+      applySource(false);
+      reconcile();
+    }
+    setInterval(() => { if (queuedState && now() >= pendingUntil) onState(queuedState); }, 200);
+
+    function connect() {
+      clearTimeout(retryTimer);
+      if (!peer || peer.destroyed) {
+        peer = new Peer({ debug: 1 });
+        peer.on("open", openConn);
+        peer.on("call", call => {
+          call.answer();
+          call.on("stream", st => {
+            sv.srcObject = st;
+            try { call.peerConnection.getReceivers().forEach(r => { if ("jitterBufferTarget" in r) r.jitterBufferTarget = 120; }); } catch {}
+            if (mode === "stream") overlay(null);
+            const p = sv.play(); p && p.catch(() => viewerHooks.blocked());
+          });
+          call.on("close", () => { if (sv.srcObject === call.remoteStream) sv.srcObject = null; });
+        });
+        peer.on("disconnected", () => { if (!peer.destroyed) peer.reconnect(); });
+        peer.on("error", err => {
+          if (err.type === "peer-unavailable") {
+            status(`${HOST_NAME} isn't hosting right now`, false);
+            if (!S) overlay("Not started yet", `This will connect as soon as ${HOST_NAME} opens the party.`);
+            retryTimer = setTimeout(openConn, 3000);
+          } else if (err.type === "network" || err.type === "server-error") {
+            status("Connection lost, retrying…", false);
+            retryTimer = setTimeout(() => { peer.destroy(); connect(); }, 3000);
+          }
+        });
+      } else openConn();
+    }
+    function openConn() {
+      if (conn) conn.close();
+      conn = peer.connect(PREFIX + code, { reliable: true });
+      conn.on("open", () => {
+        status(`Watching with ${HOST_NAME}`, true);
+        bestRtt = Infinity; for (let i = 0; i < 6; i++) setTimeout(ping, i * 150);
+        if (!joined) overlay(`${HOST_NAME}'s watch party`, "", { spin: false, join: true });
+        if (mode === "stream") conn.send({ type: "want-stream", on: true });
+        else if (S && S.kind === "file" && myFileKey === fileKey(S)) conn.send({ type: "want-stream", on: false });
+      });
+      conn.on("data", m => {
+        if (!m || typeof m !== "object") return;
+        if (m.type === "pong") onPong(m);
+        else if (m.type === "state") onState(m.s);
+        else if (m.type === "ended") { status(`${HOST_NAME} closed the party`, false); }
+      });
+      conn.on("close", () => { status("Reconnecting…", false); retryTimer = setTimeout(openConn, 3000); });
+    }
+    connect();
+  }
+})();
+</script>
+</body>
+</html>
