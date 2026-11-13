@@ -19,4 +19,6 @@ Personal tools for hanging out on FaceTime. Hosted on GitHub Pages: https://chri
 Source is in `extension/`. A GitHub Action bundles PeerJS into it and publishes `watch-sync.zip` on every change.
 Install: unzip → `chrome://extensions` → Developer mode → Load unpacked.
 
+Viewers type a name and I press Allow or Deny before anything is sent to them (screen share and watch party). Each time I open a host page it gets a new code.
+
 Connections are peer-to-peer (WebRTC). The free PeerJS broker only handles the initial handshake.
