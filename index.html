@@ -312,8 +312,14 @@
     const tryPlay = () => video.play().then(() => show($("tapOverlay"), false)).catch(() => show($("tapOverlay")));
     $("tapToPlay").onclick = () => { tryPlay(); keepAwake(); };
 
+    // One pending retry at a time: always clear the old timer before arming a new one.
+    // A pending peer rebuild (network error) wins over a plain redial, which would run on a dead peer.
+    let rebuilding = false;
+    const retry = fn => { clearTimeout(retryTimer); retryTimer = setTimeout(fn, 3000); };
+    const redial = () => { if (!rebuilding) retry(openConn); };
+    const rebuild = () => { rebuilding = true; retry(() => { peer.destroy(); connect(); }); };
     function connect() {
-      clearTimeout(retryTimer);
+      clearTimeout(retryTimer); rebuilding = false;
       if (!peer || peer.destroyed) {
         peer = new Peer({ debug: 1 });
         peer.on("open", openConn);
@@ -332,23 +338,29 @@
         peer.on("error", err => {
           if (err.type === "peer-unavailable") {
             overlay("Not sharing right now", "This page will connect as soon as Chris opens the share page.");
-            retryTimer = setTimeout(openConn, 3000);
+            redial();
           } else if (err.type === "network" || err.type === "server-error") {
             overlay("Connection lost", "Retrying…");
-            retryTimer = setTimeout(() => { peer.destroy(); connect(); }, 3000);
+            rebuild();
           }
         });
       } else openConn();
     }
     function openConn() {
-      if (conn) conn.close();
-      conn = peer.connect(PREFIX + code, { reliable: true });
+      clearTimeout(retryTimer); rebuilding = false;
+      // Drop the old connection first so its close event is seen as stale below.
+      const old = conn; conn = null;
+      if (old) { try { old.close(); } catch {} }
+      const c = conn = peer.connect(PREFIX + code, { reliable: true });
       conn.on("data", msg => {
         if (msg.type === "waiting") { video.srcObject = null; show($("toolbar"), false); overlay("Connected", "Waiting for Chris to pick a screen…"); }
         if (msg.type === "live" && !video.srcObject) overlay("Starting video…");
         if (msg.type === "ended") { video.srcObject = null; show($("toolbar"), false); overlay("Sharing ended", "This page will reconnect automatically if he starts again."); }
       });
-      conn.on("close", () => { show($("toolbar"), false); video.srcObject = null; overlay("Reconnecting…"); retryTimer = setTimeout(openConn, 3000); });
+      conn.on("close", () => {
+        if (conn !== c) return; // stale connection (already replaced): ignore, as offscreen.js does
+        show($("toolbar"), false); video.srcObject = null; overlay("Reconnecting…"); redial();
+      });
     }
     connect();
 
