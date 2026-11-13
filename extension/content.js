@@ -158,13 +158,40 @@
   }
 
   function sendNav() { if (active) send({ type: "nav", url: location.href, title: document.title }); }
-  function onNav(m) {
+  // Hosts the extension runs on, read from manifest.json's content_scripts so
+  // the list can't drift. "*://*.netflix.com/*" -> any netflix.com subdomain,
+  // "*://tv.apple.com/*" -> that exact host.
+  const navHosts = (() => {
+    const out = [];
     try {
-      const theirs = new URL(m.url);
-      if (theirs.hostname === location.hostname && theirs.pathname === location.pathname) return;
-      const title = (m.title || "").replace(/\s*[|\-–—]\s*(Netflix|Disney\+|Max|Hulu|Prime Video|YouTube|Peacock|Paramount\+).*$/i, "").trim();
-      toast(`${partner} is on ${title || theirs.hostname}`, "Open", () => { location.href = m.url; }, 9000);
+      for (const cs of chrome.runtime.getManifest().content_scripts || []) {
+        for (const pat of cs.matches || []) {
+          const mm = /^[^:]+:\/\/(\*\.)?([a-z0-9.-]+)\//i.exec(pat);
+          if (mm) out.push({ base: mm[2].toLowerCase(), sub: !!mm[1] });
+        }
+      }
     } catch {}
+    return out;
+  })();
+  const hostListed = h => navHosts.some(e => h === e.base || (e.sub && h.endsWith("." + e.base)));
+  // Only ever offer to open an https page on this service or another supported one.
+  // Anything else from the partner (javascript:, data:, http:, unknown sites) is dropped.
+  function navTarget(raw) {
+    if (typeof raw !== "string" || raw.length > 2048) return null;
+    let u;
+    try { u = new URL(raw); } catch { return null; }
+    if (u.protocol !== "https:" || u.username || u.password) return null;
+    const h = u.hostname.toLowerCase();
+    if (h !== location.hostname.toLowerCase() && !hostListed(h)) return null;
+    return u;
+  }
+
+  function onNav(m) {
+    const theirs = navTarget(m && m.url);
+    if (!theirs) return;
+    if (theirs.hostname === location.hostname && theirs.pathname === location.pathname) return;
+    const title = String(m.title || "").slice(0, 120).replace(/\s*[|\-–—]\s*(Netflix|Disney\+|Max|Hulu|Prime Video|YouTube|Peacock|Paramount\+).*$/i, "").trim();
+    toast(`${partner} is on ${title || theirs.hostname}`, "Open", () => { location.href = theirs.href; }, 9000);
   }
 
   function onPeer(m) {
