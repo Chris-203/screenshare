@@ -16,7 +16,8 @@ Personal tools for hanging out on FaceTime. Hosted on GitHub Pages: https://chri
 - Local files: if she has the same file she plays her own copy (perfect quality); otherwise it streams live from my PC over WebRTC.
 
 ## Extension
-Source is in `extension/`. A GitHub Action bundles PeerJS into it and publishes `watch-sync.zip` on every change.
+Source is in `extension/`. A GitHub Action bundles PeerJS into it (checked against a pinned SHA-256) and publishes `watch-sync.zip` on every change.
+The pages load that same `extension/peerjs.min.js` from this site instead of a CDN.
 Install: unzip → `chrome://extensions` → Developer mode → Load unpacked.
 
 Connections are peer-to-peer (WebRTC). The free PeerJS broker only handles the initial handshake.
