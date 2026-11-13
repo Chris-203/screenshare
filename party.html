@@ -666,8 +666,14 @@
     }
     setInterval(() => { if (queuedState && now() >= pendingUntil) onState(queuedState); }, 200);
 
+    // One pending retry at a time: always clear the old timer before arming a new one.
+    // A pending peer rebuild (network error) wins over a plain redial, which would run on a dead peer.
+    let rebuilding = false;
+    const retry = fn => { clearTimeout(retryTimer); retryTimer = setTimeout(fn, 3000); };
+    const redial = () => { if (!rebuilding) retry(openConn); };
+    const rebuild = () => { rebuilding = true; retry(() => { peer.destroy(); connect(); }); };
     function connect() {
-      clearTimeout(retryTimer);
+      clearTimeout(retryTimer); rebuilding = false;
       if (!peer || peer.destroyed) {
         peer = new Peer({ debug: 1 });
         peer.on("open", openConn);
@@ -686,17 +692,20 @@
           if (err.type === "peer-unavailable") {
             status(`${HOST_NAME} isn't hosting right now`, false);
             if (!S) overlay("Not started yet", `This will connect as soon as ${HOST_NAME} opens the party.`);
-            retryTimer = setTimeout(openConn, 3000);
+            redial();
           } else if (err.type === "network" || err.type === "server-error") {
             status("Connection lost, retrying…", false);
-            retryTimer = setTimeout(() => { peer.destroy(); connect(); }, 3000);
+            rebuild();
           }
         });
       } else openConn();
     }
     function openConn() {
-      if (conn) conn.close();
-      conn = peer.connect(PREFIX + code, { reliable: true });
+      clearTimeout(retryTimer); rebuilding = false;
+      // Drop the old connection first so its close event is seen as stale below.
+      const old = conn; conn = null;
+      if (old) { try { old.close(); } catch {} }
+      const c = conn = peer.connect(PREFIX + code, { reliable: true });
       conn.on("open", () => {
         status(`Watching with ${HOST_NAME}`, true);
         bestRtt = Infinity; for (let i = 0; i < 6; i++) setTimeout(ping, i * 150);
@@ -710,7 +719,10 @@
         else if (m.type === "state") onState(m.s);
         else if (m.type === "ended") { status(`${HOST_NAME} closed the party`, false); }
       });
-      conn.on("close", () => { status("Reconnecting…", false); retryTimer = setTimeout(openConn, 3000); });
+      conn.on("close", () => {
+        if (conn !== c) return; // stale connection (already replaced): ignore, as offscreen.js does
+        status("Reconnecting…", false); redial();
+      });
     }
     connect();
   }
