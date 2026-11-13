@@ -6,15 +6,34 @@
 const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), b => ALPHABET[b % ALPHABET.length]).join("");
 
-async function getState() {
+// Messages arrive concurrently (popup polling, content-script ticks, peer status), and every
+// handler awaits. A queue runs its jobs strictly one after another, so a read-modify-write of
+// the saved state can't interleave with another one and drop its patch.
+const makeQueue = () => {
+  let tail = Promise.resolve();
+  return job => { const run = tail.then(job); tail = run.catch(() => {}); return run; };
+};
+const stateQueue = makeQueue();
+const commandQueue = makeQueue();
+const COMMANDS = new Set(["start", "join", "bindTab", "leave"]);
+
+const IDLE = { party: null, tabId: null, status: "idle", partnerName: null };
+async function readState() {
   const { ws } = await chrome.storage.session.get("ws");
-  return ws || { party: null, tabId: null, status: "idle", partnerName: null };
+  return ws || { ...IDLE };
 }
-async function setState(patch) {
-  const s = Object.assign(await getState(), patch);
+// getState waits for writes that were requested before it, so it never returns a stale snapshot.
+const getState = () => stateQueue(readState);
+// `patch` is an object, or a function of the current state that returns a patch (or null for
+// no change) when the decision has to be made against the state at the moment of writing.
+const setState = patch => stateQueue(async () => {
+  const s = await readState();
+  const p = typeof patch === "function" ? patch(s) : patch;
+  if (!p) return s;
+  Object.assign(s, p);
   await chrome.storage.session.set({ ws: s });
   return s;
-}
+});
 
 async function ensureOffscreen() {
   const ctx = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"] });
@@ -36,6 +55,7 @@ const toTab = async (msg, tabId) => {
 
 async function activateTab(tabId) {
   const s = await getState();
+  if (!s.party) return false;
   if (s.tabId != null && s.tabId !== tabId) await toTab({ type: "deactivate" }, s.tabId);
   await setState({ tabId });
   return toTab({ type: "activate", role: s.party.role, partnerName: s.partnerName, status: s.status }, tabId);
@@ -62,6 +82,7 @@ async function handle(m, sender) {
     }
 
     case "bindTab": {
+      if (!s.party) return { ok: false, error: "There's no party to move. Start or join one first." };
       const ok = await activateTab(m.tabId);
       return ok ? { ok: true } : { ok: false, error: "This tab isn't a supported streaming site." };
     }
@@ -90,7 +111,8 @@ async function handle(m, sender) {
     case "peerStatus": {
       const patch = { status: m.status };
       if (m.partnerName) patch.partnerName = m.partnerName;
-      const ns = await setState(patch);
+      // A status that lands after "leave" must not bring a finished party back to life.
+      const ns = await setState(cur => cur.party ? patch : null);
       await toTab({ type: "status", status: ns.status, partnerName: ns.partnerName });
       chrome.action.setBadgeText({ text: ns.status === "connected" ? "ON" : ns.party ? "…" : "" });
       chrome.action.setBadgeBackgroundColor({ color: ns.status === "connected" ? "#10b981" : "#6b7280" });
@@ -104,12 +126,15 @@ async function handle(m, sender) {
 
 chrome.runtime.onMessage.addListener((m, sender, reply) => {
   if (!m || m.to !== "bg") return;
-  handle(m, sender).then(reply, e => reply({ ok: false, error: String(e) }));
+  // Popup commands each make several state changes, so they also run one at a time: a
+  // double-clicked Start, or Leave during a Join, finishes one before the next begins.
+  const run = () => handle(m, sender);
+  (COMMANDS.has(m.cmd) ? commandQueue(run) : run()).then(reply, e => reply({ ok: false, error: String(e) }));
   return true;
 });
 
 // If the synced tab is closed, keep the party but forget the tab.
-chrome.tabs.onRemoved.addListener(async id => { const s = await getState(); if (s.tabId === id) await setState({ tabId: null }); });
+chrome.tabs.onRemoved.addListener(id => { setState(s => s.tabId === id ? { tabId: null } : null); });
 
 // Browser restarted with a party still saved (session storage is cleared on restart, so this is just a safety net).
 chrome.runtime.onStartup.addListener(async () => { const s = await getState(); if (s.party) { await ensureOffscreen(); toOffscreen({ cmd: "open", party: s.party }); } });

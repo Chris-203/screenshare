@@ -63,6 +63,7 @@
       connecting: ["Connecting…", false],
       "partner-offline": [`Waiting for ${partner === "Partner" ? "the host" : partner}…`, false],
       reconnecting: ["Reconnecting…", false],
+      "party-full": ["Party is full", false],
     };
     const [t, on] = map[linkStatus] || ["Watch Sync", false];
     pill(t, on, !on);
