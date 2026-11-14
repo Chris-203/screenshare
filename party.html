@@ -8,7 +8,7 @@
 <meta name="theme-color" content="#0e0f12">
 <title>Watch Party</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect x='6' y='12' width='52' height='36' rx='6' fill='%23a78bfa'/><path d='M27 22v16l13-8z' fill='%23140b2e'/></svg>">
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="extension/peerjs.min.js"></script>
 <style>
   :root {
     --bg: #0e0f12; --panel: #17191e; --line: #2a2d35; --text: #eceef2;
@@ -743,8 +743,14 @@
     }
     setInterval(() => { if (queuedState && now() >= pendingUntil) onState(queuedState); }, 200);
 
+    // One pending retry at a time: always clear the old timer before arming a new one.
+    // A pending peer rebuild (network error) wins over a plain redial, which would run on a dead peer.
+    let rebuilding = false;
+    const retry = fn => { clearTimeout(retryTimer); retryTimer = setTimeout(fn, 3000); };
+    const redial = () => { if (!rebuilding) retry(openConn); };
+    const rebuild = () => { rebuilding = true; retry(() => { peer.destroy(); connect(); }); };
     function connect() {
-      clearTimeout(retryTimer);
+      clearTimeout(retryTimer); rebuilding = false;
       if (!peer || peer.destroyed) {
         peer = new Peer({ debug: 1 });
         peer.on("open", openConn);
@@ -763,19 +769,21 @@
           if (err.type === "peer-unavailable") {
             status(`${HOST_NAME} isn't hosting right now`, false);
             if (!S) overlay("Not started yet", `This will connect as soon as ${HOST_NAME} opens the party.`);
-            retryTimer = setTimeout(openConn, 3000);
+            redial();
           } else if (err.type === "network" || err.type === "server-error") {
             status("Connection lost, retrying…", false);
-            retryTimer = setTimeout(() => { peer.destroy(); connect(); }, 3000);
+            rebuild();
           }
         });
       } else openConn();
     }
     function openConn() {
-      if (denied) return;
-      if (conn) conn.close();
-      conn = peer.connect(PREFIX + code, { reliable: true });
-      const c = conn;
+      if (denied) return; // no automatic retry after a no
+      clearTimeout(retryTimer); rebuilding = false;
+      // Drop the old connection first so its close event is seen as stale below.
+      const old = conn; conn = null;
+      if (old) { try { old.close(); } catch {} }
+      const c = conn = peer.connect(PREFIX + code, { reliable: true });
       conn.on("open", () => {
         c.send({ type: "hello", name: myName, pass });
         if (mode === "stream") conn.send({ type: "want-stream", on: true });
@@ -801,7 +809,10 @@
         else if (m.type === "state") onState(m.s);
         else if (m.type === "ended") { status(`${HOST_NAME} closed the party`, false); }
       });
-      conn.on("close", () => { status("Reconnecting…", false); retryTimer = setTimeout(openConn, 3000); });
+      conn.on("close", () => {
+        if (conn !== c) return; // stale connection (already replaced): ignore, as offscreen.js does
+        status("Reconnecting…", false); redial();
+      });
     }
     // Ask for a name first; the host sees it next to Allow / Deny.
     // Submitting is also the tap that unlocks sound on iPhone/iPad.

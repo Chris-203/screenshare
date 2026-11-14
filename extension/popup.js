@@ -9,6 +9,7 @@ const LABELS = {
   connecting: () => "Connecting…",
   "partner-offline": () => "Waiting for the host to come online…",
   reconnecting: () => "Reconnecting…",
+  "party-full": () => "This party already has two people.",
 };
 
 function err(msg) { $("err").textContent = msg || ""; show($("err"), !!msg); }

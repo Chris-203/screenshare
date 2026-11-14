@@ -8,7 +8,7 @@
 <meta name="theme-color" content="#0e0f12">
 <title>Screen Share</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect x='6' y='10' width='52' height='34' rx='5' fill='%2334d399'/><rect x='24' y='48' width='16' height='5' rx='2' fill='%2334d399'/></svg>">
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="extension/peerjs.min.js"></script>
 <style>
   :root {
     --bg: #0e0f12; --panel: #17191e; --line: #2a2d35; --text: #eceef2;
@@ -392,8 +392,14 @@
     const tryPlay = () => video.play().then(() => show($("tapOverlay"), false)).catch(() => show($("tapOverlay")));
     $("tapToPlay").onclick = () => { tryPlay(); keepAwake(); };
 
+    // One pending retry at a time: always clear the old timer before arming a new one.
+    // A pending peer rebuild (network error) wins over a plain redial, which would run on a dead peer.
+    let rebuilding = false;
+    const retry = fn => { clearTimeout(retryTimer); retryTimer = setTimeout(fn, 3000); };
+    const redial = () => { if (!rebuilding) retry(openConn); };
+    const rebuild = () => { rebuilding = true; retry(() => { peer.destroy(); connect(); }); };
     function connect() {
-      clearTimeout(retryTimer);
+      clearTimeout(retryTimer); rebuilding = false;
       if (!peer || peer.destroyed) {
         peer = new Peer({ debug: 1 });
         peer.on("open", openConn);
@@ -412,19 +418,21 @@
         peer.on("error", err => {
           if (err.type === "peer-unavailable") {
             overlay("Not sharing right now", "This page will connect as soon as Chris opens the share page.");
-            retryTimer = setTimeout(openConn, 3000);
+            redial();
           } else if (err.type === "network" || err.type === "server-error") {
             overlay("Connection lost", "Retrying…");
-            retryTimer = setTimeout(() => { peer.destroy(); connect(); }, 3000);
+            rebuild();
           }
         });
       } else openConn();
     }
     function openConn() {
-      if (denied) return;
-      if (conn) conn.close();
-      conn = peer.connect(PREFIX + code, { reliable: true });
-      const c = conn;
+      if (denied) return; // no automatic retry after a no
+      clearTimeout(retryTimer); rebuilding = false;
+      // Drop the old connection first so its close event is seen as stale below.
+      const old = conn; conn = null;
+      if (old) { try { old.close(); } catch {} }
+      const c = conn = peer.connect(PREFIX + code, { reliable: true });
       c.on("open", () => c.send({ type: "hello", name: myName, pass }));
       conn.on("data", msg => {
         if (msg.type === "pending") { video.srcObject = null; show($("toolbar"), false); overlay("Asking Chris…", "You'll see the screen as soon as Chris lets you in."); }
@@ -439,7 +447,10 @@
         if (msg.type === "live" && !video.srcObject) overlay("Starting video…");
         if (msg.type === "ended") { video.srcObject = null; show($("toolbar"), false); overlay("Sharing ended", "This page will reconnect automatically if he starts again."); }
       });
-      conn.on("close", () => { show($("toolbar"), false); video.srcObject = null; overlay("Reconnecting…"); retryTimer = setTimeout(openConn, 3000); });
+      conn.on("close", () => {
+        if (conn !== c) return; // stale connection (already replaced): ignore, as offscreen.js does
+        show($("toolbar"), false); video.srcObject = null; overlay("Reconnecting…"); redial();
+      });
     }
     // Ask for a name first; the host sees it next to Allow / Deny.
     show($("nameGate"));

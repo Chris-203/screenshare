@@ -15,8 +15,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # extension/peerjs.min.js is also what index.html and party.html load, so it
+      # must only ever be the pinned build. To upgrade PeerJS, change the version
+      # and the SHA-256 together (sha256sum of dist/peerjs.min.js from the npm tarball).
       - name: Bundle PeerJS (extensions can't load code from the web)
-        run: curl -fsSL https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js -o extension/peerjs.min.js
+        env:
+          PEERJS_VERSION: 1.5.4
+          PEERJS_SHA256: ad5d8870d1e389914f9cba8d35be313c4327c69ee0a221e482e9bf7621136fe5
+        run: |
+          curl -fsSL "https://unpkg.com/peerjs@${PEERJS_VERSION}/dist/peerjs.min.js" -o "$RUNNER_TEMP/peerjs.min.js"
+          echo "${PEERJS_SHA256}  $RUNNER_TEMP/peerjs.min.js" | sha256sum -c -
+          mv "$RUNNER_TEMP/peerjs.min.js" extension/peerjs.min.js
+          echo "${PEERJS_SHA256}  extension/peerjs.min.js" | sha256sum -c -
 
       - name: Zip the extension
         run: |
