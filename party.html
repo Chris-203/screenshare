@@ -54,6 +54,13 @@
   .linkbox b { font: 600 15px ui-monospace, "SF Mono", Consolas, monospace; letter-spacing: .14em; }
   .linkbox button { padding: 7px 12px; font-size: 14px; }
 
+  .reqs { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; max-width: 440px; }
+  .req { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 5px 5px 5px 12px; font-size: 14px; }
+  .req span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .req button { flex: none; padding: 7px 12px; font-size: 14px; }
+  #nameForm { display: flex; gap: 8px; margin-top: 18px; width: min(360px, 80vw); }
+
   /* source picker */
   .tabs { display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 4px; width: fit-content; max-width: 100%; overflow-x: auto; }
   .tabs button { background: transparent; padding: 8px 14px; font-size: 14px; white-space: nowrap; }
@@ -126,6 +133,8 @@
     <div class="linkbox"><code id="shareLink">…</code><b id="codeLabel"></b><button id="copyBtn">Copy link</button></div>
   </div>
 
+  <div id="requests" class="reqs hidden"></div>
+
   <div class="tabs" id="tabs">
     <button data-tab="yt" class="on">YouTube</button>
     <button data-tab="url">Video link</button>
@@ -159,6 +168,10 @@
         <div class="spinner" id="vSpin"></div>
         <div class="big" id="vTitle">Watch Party</div>
         <div id="vSub"></div>
+        <form id="nameForm" class="hidden">
+          <input id="nameInput" type="text" maxlength="24" placeholder="Your name" autocomplete="nickname" spellcheck="false" required>
+          <button class="primary" style="flex:none">Ask to join</button>
+        </form>
         <button id="joinBtn" class="primary hidden" style="margin-top:18px">Tap to join</button>
       </div>
     </div>
@@ -191,6 +204,13 @@
     get(k) { try { return localStorage.getItem(k); } catch { return null; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch {} },
   };
+  // sessionStorage: lives as long as this tab (survives a reload), gone when the tab is closed.
+  const session = {
+    get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { sessionStorage.setItem(k, v); } catch {} },
+  };
+  const newPass = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("");
+  const cleanName = s => (typeof s === "string" ? s : "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 24) || "Someone";
   const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), b => ALPHABET[b % ALPHABET.length]).join("");
   const cleanCode = s => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
   const fmt = s => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2, "0")}:${x}` : `${m}:${x}`; };
@@ -280,8 +300,10 @@
   function startHost() {
     show($("host"));
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    let code = store.get("wp-code");
-    if (!code) { code = newCode(); store.set("wp-code", code); }
+    // A new code for every party (this tab), so an old link stops working once the tab is closed.
+    try { localStorage.removeItem("wp-code"); } catch {}
+    let code = session.get("wp-code");
+    if (!code) { code = newCode(); session.set("wp-code", code); }
     const link = `${location.origin}${location.pathname}?r=${code}`;
     $("shareLink").textContent = link.replace(/^https?:\/\//, "").replace(/\?r=.*/, "?r=");
     $("codeLabel").textContent = code;
@@ -298,7 +320,9 @@
     let stream = null;            // captureStream() for local files
     let autoPaused = false;
     const stalled = new Set();
-    const viewers = new Map();    // peerId -> { conn, call, wantsStream }
+    const viewers = new Map();    // peerId -> { conn, call, wantsStream, name, ok, row }; ok = allowed by the host
+    const passes = new Set();     // handed to allowed viewers so a dropped connection can rejoin without asking again
+    const MAX_PENDING = 5;
     let peer;
 
     const stage = $("hostStage");
@@ -306,7 +330,7 @@
     hv.controls = true; hv.playsInline = true; hv.preload = "auto"; show(hv, false);
     stage.append(hv);
 
-    const send = (v, msg) => { if (v.conn.open) v.conn.send(msg); };
+    const send = (v, msg) => { if (v.ok && v.conn.open) v.conn.send(msg); };
     const broadcast = msg => viewers.forEach(v => send(v, msg));
     const anchor = () => {
       if (!A) return;
@@ -317,7 +341,9 @@
     const sync = () => { anchor(); pushState(); };
 
     const setStatus = () => {
-      const n = [...viewers.values()].filter(v => v.conn.open).length;
+      const n = [...viewers.values()].filter(v => v.ok && v.conn.open).length;
+      const asking = [...viewers.values()].filter(v => !v.ok).length;
+      document.title = (asking ? `(${asking} asking) ` : "") + "Watch Party";
       $("hostStatus").textContent = n === 0 ? "Waiting for her to join" : n === 1 ? "1 person in the party" : `${n} people in the party`;
       $("hostDot").className = "dot " + (n ? "on" : "");
       $("syncInfo").textContent = stalled.size ? "Waiting for her video to load…" : "";
@@ -399,7 +425,7 @@
     }
     function callViewer(id) {
       const v = viewers.get(id);
-      if (!v || !v.conn.open || !v.wantsStream || !stream || !stream.getTracks().length) return;
+      if (!v || !v.ok || !v.conn.open || !v.wantsStream || !stream || !stream.getTracks().length) return;
       if (v.call) v.call.close();
       v.call = peer.call(id, stream);
       setTimeout(() => tune(v.call), 800);
@@ -428,30 +454,82 @@
       setStatus();
     }
 
+    // ---- approval: a viewer gets no state, no stream and no control until the host presses Allow
+    function ask(v) {
+      const row = document.createElement("div"); row.className = "req";
+      const who = document.createElement("span"); who.textContent = `${v.name} wants to join`;
+      const yes = document.createElement("button"); yes.className = "primary"; yes.textContent = "Allow"; yes.onclick = () => admit(v, newPass());
+      const no = document.createElement("button"); no.textContent = "Deny"; no.onclick = () => deny(v);
+      row.append(who, yes, no);
+      v.row = row; $("requests").append(row); show($("requests"));
+      v.conn.send({ type: "pending" });
+      setStatus(); toast(`${v.name} wants to join`);
+    }
+    function settle(v) {
+      if (v.row) { v.row.remove(); v.row = null; }
+      show($("requests"), $("requests").childElementCount > 0);
+    }
+    function admit(v, pass) {
+      settle(v);
+      if (!v.conn.open || viewers.get(v.conn.peer) !== v) return setStatus();
+      v.ok = true; passes.add(pass);
+      v.conn.send({ type: "welcome", pass });
+      anchor(); send(v, { type: "state", s: S });
+      callViewer(v.conn.peer);
+      setStatus(); toast(`${v.name} joined`);
+    }
+    function deny(v) {
+      settle(v);
+      if (viewers.get(v.conn.peer) === v) viewers.delete(v.conn.peer);
+      if (v.conn.open) v.conn.send({ type: "denied" });
+      setTimeout(() => v.conn.close(), 500); // give the message a moment to go out
+      setStatus();
+    }
+
     // ---- peer
     function connectPeer(attempt = 0) {
       peer = new Peer(PREFIX + code, { debug: 1 });
       peer.on("open", setStatus);
       peer.on("connection", conn => {
-        conn.on("open", () => {
-          viewers.set(conn.peer, { conn, call: null, wantsStream: true });
-          anchor(); send(viewers.get(conn.peer), { type: "state", s: S });
-          callViewer(conn.peer);
-          setStatus(); toast("She joined");
-        });
+        const me = { conn, call: null, wantsStream: true, name: "", ok: false, row: null };
+        let greeted = false;
+        // The viewer has to introduce itself first; a connection that never does is closed.
+        const noHello = setTimeout(() => { if (!greeted) conn.close(); }, 15000);
         conn.on("data", m => {
           if (!m || typeof m !== "object") return;
+          if (m.type === "hello") {
+            if (greeted) return;
+            greeted = true; clearTimeout(noHello);
+            me.name = cleanName(m.name);
+            const old = viewers.get(conn.peer);
+            if (old && old !== me) { settle(old); if (old.call) old.call.close(); old.conn.close(); }
+            viewers.set(conn.peer, me);
+            if (typeof m.pass === "string" && passes.has(m.pass)) admit(me, m.pass);
+            else {
+              // Keep the list short: if it is full, the oldest request makes room (it may be someone who already left).
+              const waiting = [...viewers.values()].filter(x => !x.ok && x !== me);
+              if (waiting.length >= MAX_PENDING) deny(waiting[0]);
+              ask(me);
+            }
+            return;
+          }
+          if (m.type === "want-stream") me.wantsStream = !!m.on; // remembered while asking, acted on once allowed
+          if (!me.ok) return;
           if (m.type === "ping") conn.send({ type: "pong", c: m.c, h: Date.now() });
           else if (m.type === "cmd") onCmd(m);
           else if (m.type === "stall") onStall(conn.peer, true);
           else if (m.type === "ready") onStall(conn.peer, false);
           else if (m.type === "want-stream") {
-            const v = viewers.get(conn.peer); if (!v) return;
-            v.wantsStream = !!m.on;
+            const v = me;
             if (v.wantsStream) callViewer(conn.peer); else if (v.call) { v.call.close(); v.call = null; }
           }
         });
-        const drop = () => { const v = viewers.get(conn.peer); if (v && v.call) v.call.close(); viewers.delete(conn.peer); onStall(conn.peer, false); setStatus(); };
+        const drop = () => {
+          clearTimeout(noHello); settle(me);
+          if (me.call) me.call.close();
+          if (viewers.get(conn.peer) === me) { viewers.delete(conn.peer); onStall(conn.peer, false); }
+          setStatus();
+        };
         conn.on("close", drop); conn.on("error", drop);
       });
       peer.on("disconnected", () => { if (!peer.destroyed) peer.reconnect(); });
@@ -489,6 +567,7 @@
     let S = null, A = null, mode = null;           // mode: 'sync' | 'stream'
     let myFileUrl = null, myFileKey = null;
     let joined = false, peer, conn, retryTimer;
+    let myName = "", pass = null, denied = false;   // pass: lets this page rejoin after a dropped connection without asking again
     let offset = 0, bestRtt = Infinity;             // hostClock ≈ Date.now() + offset
     let pendingUntil = 0, queuedState = null;
     let bufferingSince = 0, stallSent = false;
@@ -499,11 +578,9 @@
     const overlay = (title, sub = "", { spin = true, join = false } = {}) => {
       show($("vOverlay"), !!title);
       $("vTitle").textContent = title || ""; $("vSub").textContent = sub;
-      show($("vSpin"), spin); show($("joinBtn"), join);
+      show($("vSpin"), spin); show($("joinBtn"), join); show($("nameForm"), false);
     };
     const status = (txt, on) => { $("vStatus").textContent = txt; $("vDot").className = "dot " + (on ? "on" : ""); };
-
-    overlay("Connecting…");
 
     // ---- join gate (unlocks sound on iPhone/iPad)
     $("joinBtn").onclick = () => {
@@ -701,21 +778,34 @@
       } else openConn();
     }
     function openConn() {
+      if (denied) return; // no automatic retry after a no
       clearTimeout(retryTimer); rebuilding = false;
       // Drop the old connection first so its close event is seen as stale below.
       const old = conn; conn = null;
       if (old) { try { old.close(); } catch {} }
       const c = conn = peer.connect(PREFIX + code, { reliable: true });
       conn.on("open", () => {
-        status(`Watching with ${HOST_NAME}`, true);
-        bestRtt = Infinity; for (let i = 0; i < 6; i++) setTimeout(ping, i * 150);
-        if (!joined) overlay(`${HOST_NAME}'s watch party`, "", { spin: false, join: true });
+        c.send({ type: "hello", name: myName, pass });
         if (mode === "stream") conn.send({ type: "want-stream", on: true });
         else if (S && S.kind === "file" && myFileKey === fileKey(S)) conn.send({ type: "want-stream", on: false });
       });
       conn.on("data", m => {
         if (!m || typeof m !== "object") return;
-        if (m.type === "pong") onPong(m);
+        if (m.type === "pending") { status(`Asking ${HOST_NAME}…`, false); overlay(`Asking ${HOST_NAME}…`, `You're in as soon as ${HOST_NAME} lets you in.`); }
+        else if (m.type === "welcome") {
+          pass = m.pass;
+          status(`Watching with ${HOST_NAME}`, true);
+          bestRtt = Infinity; for (let i = 0; i < 6; i++) setTimeout(ping, i * 150);
+          if (!joined) overlay(`${HOST_NAME}'s watch party`, "", { spin: false, join: true });
+          else if (S && S.kind && !(mode === "stream" && !sv.srcObject)) overlay(null);
+        }
+        else if (m.type === "denied") {
+          denied = true; clearTimeout(retryTimer);
+          c.removeAllListeners("close"); c.close(); // no automatic retry after a no
+          status("Not let in", false);
+          overlay(`${HOST_NAME} didn't let you in`, "Reload this page to ask again.", { spin: false });
+        }
+        else if (m.type === "pong") onPong(m);
         else if (m.type === "state") onState(m.s);
         else if (m.type === "ended") { status(`${HOST_NAME} closed the party`, false); }
       });
@@ -724,7 +814,20 @@
         status("Reconnecting…", false); redial();
       });
     }
-    connect();
+    // Ask for a name first; the host sees it next to Allow / Deny.
+    // Submitting is also the tap that unlocks sound on iPhone/iPad.
+    overlay(`${HOST_NAME}'s watch party`, `${HOST_NAME} sees your name and decides whether to let you in.`, { spin: false });
+    show($("nameForm"));
+    $("nameInput").value = store.get("wp-name") || "";
+    $("nameForm").onsubmit = e => {
+      e.preventDefault();
+      myName = cleanName($("nameInput").value);
+      store.set("wp-name", myName);
+      joined = true;
+      [pv, sv].forEach(v => { const p = v.play(); p && p.catch(() => {}); });
+      overlay("Connecting…");
+      connect();
+    };
   }
 })();
 </script>

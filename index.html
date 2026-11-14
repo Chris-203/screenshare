@@ -56,6 +56,11 @@
   .dot.on { background: var(--accent); box-shadow: 0 0 0 4px rgba(52,211,153,.18); }
   .dot.live { background: var(--danger); box-shadow: 0 0 0 4px rgba(248,113,113,.2); animation: pulse 1.6s infinite; }
   @keyframes pulse { 50% { box-shadow: 0 0 0 7px rgba(248,113,113,.05); } }
+  .req { display: flex; align-items: center; gap: 8px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 10px; padding: 6px 6px 6px 14px; font-size: 14px; }
+  .req span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .req button { flex: none; padding: 8px 14px; }
+  #nameInput { letter-spacing: normal; text-transform: none; }
   #preview { width: 100%; border-radius: 10px; background: #000; aspect-ratio: 16/9; object-fit: contain; }
 
   /* ---------- viewer ---------- */
@@ -112,6 +117,7 @@
       <div class="linkbox"><code id="shareLink">…</code><button id="copyBtn">Copy</button></div>
       <div id="bigCode" class="bigcode">······</div>
     </div>
+    <div id="requests" class="stack hidden"></div>
     <video id="preview" class="hidden" muted playsinline autoplay></video>
     <label class="check"><input type="checkbox" id="withAudio"> Include computer sound</label>
     <button id="startBtn" class="primary" disabled>Choose screen or window</button>
@@ -119,7 +125,19 @@
       <button id="switchBtn">Switch window</button>
       <button id="stopBtn" class="danger">Stop</button>
     </div>
-    <p class="note">Tip: sharing a single window looks sharper than a whole monitor. The link stays the same next time. <a href="#" id="newCode" style="color:var(--muted)">Make a new one</a></p>
+    <p class="note">Tip: sharing a single window looks sharper than a whole monitor. Nobody sees your screen until you press Allow for them. The link is new each time you open this page. <a href="#" id="newCode" style="color:var(--muted)">Make a new one now</a></p>
+  </div>
+</section>
+
+<!-- ============ VIEWER: NAME ============ -->
+<section id="nameGate" class="page hidden">
+  <div class="card">
+    <h1>Watch the screen share</h1>
+    <p class="sub">Chris sees this name and decides whether to let you in.</p>
+    <form id="nameForm" class="row">
+      <input id="nameInput" maxlength="24" placeholder="Your name" autocomplete="nickname" spellcheck="false" required>
+      <button class="primary" style="flex:0 0 auto">Ask to watch</button>
+    </form>
   </div>
 </section>
 
@@ -154,6 +172,13 @@
     get(k) { try { return localStorage.getItem(k); } catch { return null; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch {} },
   };
+  // sessionStorage: lives as long as this tab (survives a reload), gone when the tab is closed.
+  const session = {
+    get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { sessionStorage.setItem(k, v); } catch {} },
+  };
+  const newPass = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("");
+  const cleanName = s => (typeof s === "string" ? s : "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 24) || "Someone";
   const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(6)), b => ALPHABET[b % ALPHABET.length]).join("");
   const cleanCode = s => (s || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
 
@@ -177,8 +202,10 @@
   // =================================================================
   function startHost() {
     show($("host"));
-    let code = store.get("ss-code");
-    if (!code) { code = newCode(); store.set("ss-code", code); }
+    // A new code for every sharing session (this tab), so an old link stops working once the tab is closed.
+    try { localStorage.removeItem("ss-code"); } catch {}
+    let code = session.get("ss-code");
+    if (!code) { code = newCode(); session.set("ss-code", code); }
     const link = `${location.origin}${location.pathname}?w=${code}`;
     $("shareLink").textContent = link.replace(/^https?:\/\//, "");
     $("bigCode").textContent = code;
@@ -187,19 +214,54 @@
       catch { prompt("Copy this link:", link); }
       setTimeout(() => $("copyBtn").textContent = "Copy", 1500);
     };
-    $("newCode").onclick = e => { e.preventDefault(); store.set("ss-code", newCode()); location.reload(); };
+    $("newCode").onclick = e => { e.preventDefault(); session.set("ss-code", newCode()); location.reload(); };
 
     let stream = null;
-    const viewers = new Map(); // peerId -> { conn, call }
+    const viewers = new Map(); // peerId -> { conn, call, name, ok, row }; ok = allowed by the host
+    const passes = new Set();  // handed to allowed viewers so a dropped connection can rejoin without asking again
+    const MAX_PENDING = 5;
     let peer;
 
     const setStatus = () => {
-      const n = [...viewers.values()].filter(v => v.conn.open).length;
+      const n = [...viewers.values()].filter(v => v.ok && v.conn.open).length;
+      const asking = [...viewers.values()].filter(v => !v.ok).length;
       const who = n === 0 ? "No one watching yet" : n === 1 ? "1 person watching" : `${n} people watching`;
       $("hostStatus").textContent = stream ? `Live · ${who}` : `Ready · ${who}`;
       $("hostDot").className = "dot " + (stream ? "live" : "on");
-      document.title = stream ? `● Live (${n}) · Screen Share` : "Screen Share";
+      document.title = (asking ? `(${asking} asking) ` : "") + (stream ? `● Live (${n}) · Screen Share` : "Screen Share");
     };
+
+    // ---- approval: nothing is sent to a viewer until the host presses Allow
+    function ask(v) {
+      const row = document.createElement("div"); row.className = "req";
+      const who = document.createElement("span"); who.textContent = `${v.name} wants to watch`;
+      const yes = document.createElement("button"); yes.className = "primary"; yes.textContent = "Allow"; yes.onclick = () => admit(v, newPass());
+      const no = document.createElement("button"); no.textContent = "Deny"; no.onclick = () => deny(v);
+      row.append(who, yes, no);
+      v.row = row; $("requests").append(row); show($("requests"));
+      v.conn.send({ type: "pending" });
+      setStatus();
+    }
+    function settle(v) {
+      if (v.row) { v.row.remove(); v.row = null; }
+      show($("requests"), $("requests").childElementCount > 0);
+    }
+    function admit(v, pass) {
+      settle(v);
+      if (!v.conn.open || viewers.get(v.conn.peer) !== v) return setStatus();
+      v.ok = true; passes.add(pass);
+      v.conn.send({ type: "welcome", pass });
+      v.conn.send({ type: stream ? "live" : "waiting" });
+      callViewer(v.conn.peer);
+      setStatus();
+    }
+    function deny(v) {
+      settle(v);
+      if (viewers.get(v.conn.peer) === v) viewers.delete(v.conn.peer);
+      if (v.conn.open) v.conn.send({ type: "denied" });
+      setTimeout(() => v.conn.close(), 500); // give the message a moment to go out
+      setStatus();
+    }
 
     function tuneSender(call) {
       // Favor sharp text over frame rate, and allow a generous bitrate.
@@ -217,25 +279,43 @@
 
     function callViewer(id) {
       const v = viewers.get(id);
-      if (!v || !stream || !v.conn.open) return;
+      if (!v || !v.ok || !stream || !v.conn.open) return;
       if (v.call) v.call.close();
       v.call = peer.call(id, stream);
       v.call.on("iceStateChanged", st => { if (st === "connected") tuneSender(v.call); });
       setTimeout(() => v.call && tuneSender(v.call), 1500);
     }
-    const broadcast = msg => viewers.forEach(v => v.conn.open && v.conn.send(msg));
+    const broadcast = msg => viewers.forEach(v => v.ok && v.conn.open && v.conn.send(msg));
 
     function connectPeer(attempt = 0) {
       peer = new Peer(PREFIX + code, { debug: 1 });
       peer.on("open", () => { $("startBtn").disabled = false; setStatus(); });
       peer.on("connection", conn => {
-        conn.on("open", () => {
-          viewers.set(conn.peer, { conn, call: null });
-          conn.send({ type: stream ? "live" : "waiting" });
-          callViewer(conn.peer);
-          setStatus();
+        const v = { conn, call: null, name: "", ok: false, row: null };
+        let greeted = false;
+        // The viewer has to introduce itself first; a connection that never does is closed.
+        const noHello = setTimeout(() => { if (!greeted) conn.close(); }, 15000);
+        conn.on("data", msg => {
+          if (greeted || !msg || msg.type !== "hello") return;
+          greeted = true; clearTimeout(noHello);
+          v.name = cleanName(msg.name);
+          const old = viewers.get(conn.peer);
+          if (old && old !== v) { settle(old); if (old.call) old.call.close(); old.conn.close(); }
+          viewers.set(conn.peer, v);
+          if (typeof msg.pass === "string" && passes.has(msg.pass)) admit(v, msg.pass);
+          else {
+            // Keep the list short: if it is full, the oldest request makes room (it may be someone who already left).
+            const waiting = [...viewers.values()].filter(x => !x.ok && x !== v);
+            if (waiting.length >= MAX_PENDING) deny(waiting[0]);
+            ask(v);
+          }
         });
-        const drop = () => { const v = viewers.get(conn.peer); if (v && v.call) v.call.close(); viewers.delete(conn.peer); setStatus(); };
+        const drop = () => {
+          clearTimeout(noHello); settle(v);
+          if (v.call) v.call.close();
+          if (viewers.get(conn.peer) === v) viewers.delete(conn.peer);
+          setStatus();
+        };
         conn.on("close", drop); conn.on("error", drop);
       });
       peer.on("disconnected", () => { if (!peer.destroyed) peer.reconnect(); });
@@ -294,7 +374,6 @@
   // VIEWER (iPhone / iPad / Mac)
   // =================================================================
   function startViewer(code) {
-    show($("viewer"));
     const video = $("remote"), viewer = $("viewer");
     const overlay = (title, sub = "", spin = true) => {
       show($("overlay"), !!title);
@@ -304,6 +383,7 @@
     overlay("Connecting…");
 
     let peer, conn, retryTimer, wakeLock;
+    let myName = "", pass = null, denied = false; // pass: lets this page rejoin after a dropped connection without asking again
     const keepAwake = async () => {
       try { if ("wakeLock" in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.onrelease = () => wakeLock = null; } } catch {}
     };
@@ -347,12 +427,22 @@
       } else openConn();
     }
     function openConn() {
+      if (denied) return; // no automatic retry after a no
       clearTimeout(retryTimer); rebuilding = false;
       // Drop the old connection first so its close event is seen as stale below.
       const old = conn; conn = null;
       if (old) { try { old.close(); } catch {} }
       const c = conn = peer.connect(PREFIX + code, { reliable: true });
+      c.on("open", () => c.send({ type: "hello", name: myName, pass }));
       conn.on("data", msg => {
+        if (msg.type === "pending") { video.srcObject = null; show($("toolbar"), false); overlay("Asking Chris…", "You'll see the screen as soon as Chris lets you in."); }
+        if (msg.type === "welcome") pass = msg.pass;
+        if (msg.type === "denied") {
+          denied = true; clearTimeout(retryTimer);
+          c.removeAllListeners("close"); c.close(); // no automatic retry after a no
+          video.srcObject = null; show($("toolbar"), false);
+          overlay("Chris didn't let you in", "Reload this page to ask again.", false);
+        }
         if (msg.type === "waiting") { video.srcObject = null; show($("toolbar"), false); overlay("Connected", "Waiting for Chris to pick a screen…"); }
         if (msg.type === "live" && !video.srcObject) overlay("Starting video…");
         if (msg.type === "ended") { video.srcObject = null; show($("toolbar"), false); overlay("Sharing ended", "This page will reconnect automatically if he starts again."); }
@@ -362,7 +452,16 @@
         show($("toolbar"), false); video.srcObject = null; overlay("Reconnecting…"); redial();
       });
     }
-    connect();
+    // Ask for a name first; the host sees it next to Allow / Deny.
+    show($("nameGate"));
+    $("nameInput").value = store.get("ss-name") || "";
+    $("nameForm").onsubmit = e => {
+      e.preventDefault();
+      myName = cleanName($("nameInput").value);
+      store.set("ss-name", myName);
+      show($("nameGate"), false); show($("viewer"));
+      connect();
+    };
 
     // ----- toolbar -----
     let fadeTimer;

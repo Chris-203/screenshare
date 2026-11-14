@@ -20,4 +20,6 @@ Source is in `extension/`. A GitHub Action bundles PeerJS into it (checked again
 The pages load that same `extension/peerjs.min.js` from this site instead of a CDN.
 Install: unzip → `chrome://extensions` → Developer mode → Load unpacked.
 
+Viewers type a name and I press Allow or Deny before anything is sent to them (screen share and watch party). Each time I open a host page it gets a new code.
+
 Connections are peer-to-peer (WebRTC). The free PeerJS broker only handles the initial handshake.
