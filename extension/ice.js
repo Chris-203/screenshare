@@ -8,7 +8,7 @@
 // dialing. PeerJS reads ICE.config each time it opens a connection, so updating it in
 // place is enough for every later connection to pick up fresh credentials.
 (() => {
-  const TURN_URL = ""; // e.g. "https://screenshare-turn.<your-subdomain>.workers.dev"
+  const TURN_URL = "https://screenshare-turn.christophercortazosuperstar987.workers.dev"; // worker/turn.js
   const pj = window.peerjs && window.peerjs.util;
   const defaults = (pj && pj.defaultConfig) || { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
   const config = Object.assign({}, defaults, { iceServers: defaults.iceServers.slice() });
