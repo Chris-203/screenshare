@@ -50,9 +50,9 @@ function open(p, attempt = 0) {
   // Passes belong to one party. Starting or joining another one starts clean.
   if (!party || party.code !== p.code || party.role !== p.role) { passes.clear(); pass = null; }
   party = p;
-  peer = new Peer(p.role === "host" ? hostId() : guestId(), { debug: 1 });
+  peer = new Peer(p.role === "host" ? hostId() : guestId(), { debug: 1, config: ICE.config });
   peer.on("open", () => {
-    if (p.role === "host") hostStatus(); else { status("connecting"); dial(); }
+    if (p.role === "host") hostStatus(); else { status("connecting"); ICE.ready().then(dial); }
   });
   peer.on("connection", c => { if (party && party.role === "host") onGuest(c); });
   peer.on("disconnected", () => { if (peer && !peer.destroyed) peer.reconnect(); });

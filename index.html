@@ -9,6 +9,7 @@
 <title>Screen Share</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect x='6' y='10' width='52' height='34' rx='5' fill='%2334d399'/><rect x='24' y='48' width='16' height='5' rx='2' fill='%2334d399'/></svg>">
 <script src="extension/peerjs.min.js"></script>
+<script src="extension/ice.js"></script>
 <style>
   :root {
     --bg: #0e0f12; --panel: #17191e; --line: #2a2d35; --text: #eceef2;
@@ -288,7 +289,7 @@
     const broadcast = msg => viewers.forEach(v => v.ok && v.conn.open && v.conn.send(msg));
 
     function connectPeer(attempt = 0) {
-      peer = new Peer(PREFIX + code, { debug: 1 });
+      peer = new Peer(PREFIX + code, { debug: 1, config: ICE.config });
       peer.on("open", () => { $("startBtn").disabled = false; setStatus(); });
       peer.on("connection", conn => {
         const v = { conn, call: null, name: "", ok: false, row: null };
@@ -401,8 +402,8 @@
     function connect() {
       clearTimeout(retryTimer); rebuilding = false;
       if (!peer || peer.destroyed) {
-        peer = new Peer({ debug: 1 });
-        peer.on("open", openConn);
+        peer = new Peer({ debug: 1, config: ICE.config });
+        peer.on("open", () => ICE.ready().then(openConn));
         peer.on("call", call => {
           call.answer();
           call.on("stream", s => {
