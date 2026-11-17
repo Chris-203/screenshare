@@ -9,6 +9,7 @@
 <title>Watch Party</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect x='6' y='12' width='52' height='36' rx='6' fill='%23a78bfa'/><path d='M27 22v16l13-8z' fill='%23140b2e'/></svg>">
 <script src="extension/peerjs.min.js"></script>
+<script src="extension/ice.js"></script>
 <style>
   :root {
     --bg: #0e0f12; --panel: #17191e; --line: #2a2d35; --text: #eceef2;
@@ -610,7 +611,7 @@
 
     // ---- peer
     function connectPeer(attempt = 0) {
-      peer = new Peer(PREFIX + code, { debug: 1 });
+      peer = new Peer(PREFIX + code, { debug: 1, config: ICE.config });
       peer.on("open", setStatus);
       peer.on("connection", conn => {
         const me = { conn, call: null, wantsStream: true, name: "", ok: false, row: null, limit: limiter(12, 4000) };
@@ -879,8 +880,8 @@
     function connect() {
       clearTimeout(retryTimer); rebuilding = false;
       if (!peer || peer.destroyed) {
-        peer = new Peer({ debug: 1 });
-        peer.on("open", openConn);
+        peer = new Peer({ debug: 1, config: ICE.config });
+        peer.on("open", () => ICE.ready().then(openConn));
         peer.on("call", call => {
           call.answer();
           call.on("stream", st => {

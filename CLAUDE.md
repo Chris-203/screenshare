@@ -11,6 +11,8 @@ Everything is static: no build step, no bundler, and no package.json outside the
 | `party.html` | Watch party. Synced YouTube, direct video URL, or a local file (the viewer plays their own copy, or the host streams it). |
 | `sync.html` | Install and usage page for the extension. Static, no script. |
 | `extension/` | Watch Sync, a Manifest V3 extension for Chrome and Edge that syncs play, pause and seek on streaming sites. |
+| `extension/ice.js` | ICE server config for all three tools. Fetches TURN credentials from the Worker, falls back to PeerJS defaults. |
+| `worker/` | Cloudflare Worker that mints short-lived TURN credentials. Deployed by hand, see `worker/README.md`. |
 | `watch-sync.zip` | Built by CI from `extension/`. Linked from `sync.html`. |
 | `.github/workflows/build-extension.yml` | On pushes to `main` that touch `extension/`: downloads PeerJS into `extension/peerjs.min.js`, zips the extension, commits both back to `main`. |
 | `.github/workflows/check-extension.yml` | On every pull request and push to `main`: runs `.github/scripts/check-extension.mjs`, then the sync drift tests. |
@@ -18,7 +20,7 @@ Everything is static: no build step, no bundler, and no package.json outside the
 
 ## How the pieces talk
 
-All three tools use PeerJS 1.5.4 and its free public broker for the handshake; media and data then go peer to peer. Peer IDs are a per-tool prefix plus a short code: `chris203-ss-` (screen share), `chris203-wp-` (watch party), `chris203-ws-` (extension, with `-host` or `-guest-<random id>` appended). The broker is public, so anyone who knows or guesses an ID can connect to it. Treat everything arriving on a connection as untrusted input.
+All three tools use PeerJS 1.5.4 and its free public broker for the handshake; media and data then go peer to peer, or through Cloudflare TURN when a direct path fails. Every `new Peer` passes `config: ICE.config`, and a side that dials waits for `ICE.ready()` first. Peer IDs are a per-tool prefix plus a short code: `chris203-ss-` (screen share), `chris203-wp-` (watch party), `chris203-ws-` (extension, with `-host` or `-guest-<random id>` appended). The broker is public, so anyone who knows or guesses an ID can connect to it. Treat everything arriving on a connection as untrusted input.
 
 `index.html` and `party.html` are each one file with one inline `<script>` that holds both roles: `startHost()` and `startViewer(code)`. The host is the source of truth. In the watch party the host broadcasts state, and viewers estimate the clock offset with ping/pong and correct drift with small playback-rate nudges or a seek.
 
@@ -68,7 +70,7 @@ Everything else is checked by hand, and every change should say how:
 
 - Pages: serve the repo root (`python3 -m http.server 8000`) and open `http://localhost:8000/` as host in one browser window. `getDisplayMedia` needs HTTPS or `localhost`, so the host must be on `localhost`; a phone on the same network can only be the viewer, and only against the deployed Pages site or a tunnel. Open the viewer link in a second browser or a private window.
 - Extension: `chrome://extensions`, Developer mode, Load unpacked, pick `extension/`. Use two browser profiles, each signed in to the streaming service, start a party in one and join from the other. After editing, press reload on the extension card and reload the streaming tab. Errors from the worker and the offscreen document are behind the "service worker" and "offscreen.html" links on that card.
-- Things that need two real devices or networks to check honestly: reconnect after a network drop, Safari on iOS, WebRTC across different networks (no TURN server is configured, so strict NATs can fail), and DRM-protected players.
+- Things that need two real devices or networks to check honestly: reconnect after a network drop, Safari on iOS, WebRTC across different networks (TURN only works once the Worker is deployed and `TURN_URL` is set), and DRM-protected players.
 
 State plainly what was not tested.
 
