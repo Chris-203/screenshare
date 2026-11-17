@@ -21,3 +21,37 @@ jobs:
 
       - name: Syntax-check extension/*.js and validate manifest.json
         run: node .github/scripts/check-extension.mjs
+
+  # Two headless browsers play the same test video as host and viewer, through
+  # party.html and through the extension. Fails if they drift apart further than
+  # the limits at the top of .github/sync-tests/run.mjs.
+  sync-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: .github/sync-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: .github/sync-tests/package-lock.json
+
+      - name: Install the test tooling (Playwright and a WebSocket server, CI only)
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Host and viewer stay in sync
+        run: node run.mjs
+
+      # The same test with sync messages dropped on purpose. It has to report
+      # drift (exit code 1), otherwise a green run above would prove nothing.
+      - name: The check fails when sync is broken
+        run: |
+          code=0
+          node run.mjs party --fault || code=$?
+          if [ "$code" -ne 1 ]; then echo "Expected exit code 1 (drift found), got $code"; exit 1; fi
