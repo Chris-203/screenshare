@@ -297,7 +297,7 @@ async function extensionSuite(hub, web) {
       const tab = (await chrome.tabs.query({})).find(t => t.id !== me.id);
       return chrome.runtime.sendMessage({ to: "bg", ...c, tabId: tab.id });
     }, cmd);
-    return { ctx, page, popup, bg };
+    return { ctx, page, popup, bg, worker };
   };
 
   const sides = [];
@@ -306,6 +306,11 @@ async function extensionSuite(hub, web) {
     const guest = await open("guest"); sides.push(guest);
     const started = await until("the host to start a party", async () => { const r = await host.bg({ cmd: "start", name: "Host" }); return r && r.ok && r; });
     await until("the guest to join", async () => { const r = await guest.bg({ cmd: "join", code: started.party.code, name: "Guest" }); return r && r.ok; });
+    // The host has to let the guest in. The real Allow buttons are in the popup and in the tab's
+    // closed shadow root, and the service worker only takes that answer from those two places,
+    // so the worker hands the answer to the offscreen document here the way it does for them.
+    const asking = await until("the guest's request to reach the host", async () => { const r = (await host.bg({ cmd: "status" })).requests; return r && r.length && r; });
+    await host.worker.evaluate(id => chrome.runtime.sendMessage({ to: "off", cmd: "decide", id, allow: true }), asking[0].id);
     for (const s of sides) await until("both sides to connect", async () => (await s.bg({ cmd: "status" })).status === "connected");
     for (const s of sides) { await s.popup.close(); }
     await sleep(2500);   // clock samples and the first forced heartbeat
