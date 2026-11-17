@@ -1,0 +1,13 @@
+{
+  "name": "screenshare-sync-tests",
+  "private": true,
+  "description": "CI-only tooling for the sync drift tests. Nothing here ships with the site or the extension.",
+  "type": "module",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0",
+    "ws": "8.23.0"
+  }
+}

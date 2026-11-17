@@ -1,7 +1,7 @@
 # Screenshare
 
 Personal two-person tools served by GitHub Pages at https://chris-203.github.io/screenshare/.
-Everything is static: no build step, no package.json, no bundler, no test suite. Pages serves the repo files as they are, so whatever lands on `main` is live.
+Everything is static: no build step, no bundler, and no package.json outside the CI-only tests in `.github/sync-tests/`. Pages serves the repo files as they are, so whatever lands on `main` is live.
 
 ## Layout
 
@@ -13,7 +13,8 @@ Everything is static: no build step, no package.json, no bundler, no test suite.
 | `extension/` | Watch Sync, a Manifest V3 extension for Chrome and Edge that syncs play, pause and seek on streaming sites. |
 | `watch-sync.zip` | Built by CI from `extension/`. Linked from `sync.html`. |
 | `.github/workflows/build-extension.yml` | On pushes to `main` that touch `extension/`: downloads PeerJS into `extension/peerjs.min.js`, zips the extension, commits both back to `main`. |
-| `.github/workflows/check-extension.yml` | On every pull request and push to `main`: runs `.github/scripts/check-extension.mjs`. |
+| `.github/workflows/check-extension.yml` | On every pull request and push to `main`: runs `.github/scripts/check-extension.mjs`, then the sync drift tests. |
+| `.github/sync-tests/` | Sync drift tests: `run.mjs`, the PeerJS stand-in `fake-peer.js`, a 150 second test video, and the only `package.json` in the repo (Playwright and `ws`, used by CI and nowhere else). |
 
 ## How the pieces talk
 
@@ -42,13 +43,26 @@ The extension has four contexts that only talk through `chrome.runtime` messages
 
 ## Checking a change
 
-The only automated check is static:
+There are two automated checks, and both run on every pull request.
+
+The static one:
 
 ```
 node .github/scripts/check-extension.mjs
 ```
 
 It runs `node --check` on every `extension/*.js`, validates `extension/manifest.json` (JSON, MV3 required fields, match patterns, every referenced file exists), and rejects inline or remote scripts in `extension/*.html`. It needs Node 18 or newer and nothing else. It does not cover the inline scripts in `index.html` and `party.html`, and it cannot tell whether anything works.
+
+The sync drift tests:
+
+```
+cd .github/sync-tests && npm ci && npx playwright install chromium
+node run.mjs            # or: node run.mjs party | node run.mjs extension
+```
+
+Two separate headless Chromium browsers play the same test video, one as host and one as viewer, first through `party.html` (video link mode) and then through the extension on a stand-in page answered locally for a youtube.com address. Play, pause and skips are made from both sides, and the run fails if the two positions are further apart than the limits at the top of `run.mjs` (150 ms playing and 300 ms paused for the page, 500 ms and 650 ms for the extension). `node run.mjs party --fault` drops the sync messages on purpose and must exit 1; CI runs that too.
+
+`party.html` and the extension scripts run unmodified. Only PeerJS is replaced: `fake-peer.js` carries the same messages through a local hub with 60 to 100 ms of delay each way, and the page test also sets the viewer's clock 4.3 seconds ahead. So these tests cover the sync logic. They do not cover WebRTC, the PeerJS broker, YouTube mode, streaming a local file, Netflix's player path, Safari, or reconnecting. If a change makes sync looser on purpose, change the limit in `run.mjs` in the same pull request and say why. If you use a PeerJS feature the tests have not seen (a new event or method), add it to `fake-peer.js`.
 
 Everything else is checked by hand, and every change should say how:
 
