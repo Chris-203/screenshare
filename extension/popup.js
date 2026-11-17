@@ -5,11 +5,13 @@ let tabId = null;
 
 const LABELS = {
   connected: p => `Synced with ${p || "your partner"}`,
-  waiting: () => "Waiting for your partner to join…",
+  waiting: () => "Waiting for someone to join…",
+  asking: () => "Asking the host to let you in…",
+  denied: () => "The host didn't let you in.",
   connecting: () => "Connecting…",
   "partner-offline": () => "Waiting for the host to come online…",
   reconnecting: () => "Reconnecting…",
-  "party-full": () => "This party already has two people.",
+  "party-full": () => "This party is full.",
 };
 
 function err(msg) { $("err").textContent = msg || ""; show($("err"), !!msg); }
@@ -20,10 +22,33 @@ async function render() {
   show($("inParty"), !!s.party);
   if (!s.party) return;
   $("codeOut").textContent = s.party.code;
-  $("codeHint").textContent = s.party.role === "host" ? "Send this code to your partner" : "You joined party";
+  $("codeHint").textContent = s.party.role === "host" ? "Send this code to everyone joining" : "You joined party";
   $("stat").textContent = (LABELS[s.status] || (() => s.status))(s.partnerName);
   $("dot").className = "dot" + (s.status === "connected" ? " on" : "");
   show($("bind"), !s.isPartyTab);
+  renderRequests(s.party.role === "host" ? s.requests || [] : []);
+}
+
+// People waiting for the host to let them in. Rebuilt only when the list changes, so a
+// button is never swapped out from under a click.
+let requestsKey = "";
+function renderRequests(list) {
+  const key = list.map(r => r.id).join("|");
+  if (key === requestsKey) return;
+  requestsKey = key;
+  const box = $("requests");
+  box.textContent = "";
+  for (const r of list) {
+    const row = document.createElement("div"); row.className = "req";
+    const who = document.createElement("span"); who.textContent = `${r.name} wants to join`;
+    const yes = document.createElement("button"); yes.className = "primary"; yes.textContent = "Allow";
+    const no = document.createElement("button"); no.textContent = "Deny";
+    yes.onclick = async () => { await bg({ cmd: "decide", id: r.id, allow: true }); render(); };
+    no.onclick = async () => { await bg({ cmd: "decide", id: r.id, allow: false }); render(); };
+    row.append(who, yes, no);
+    box.append(row);
+  }
+  show(box, list.length > 0);
 }
 
 (async () => {
