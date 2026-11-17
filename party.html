@@ -107,6 +107,34 @@
     background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 9px 16px; font-size: 14px;
     transition: transform .25s; pointer-events: none; }
   .toast.show { transform: translateX(-50%) translateY(0); }
+
+  /* chat and reactions */
+  .chatbtn { position: fixed; right: max(14px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom)); z-index: 30;
+    width: 46px; height: 46px; padding: 0; border-radius: 50%; font-size: 20px; line-height: 1;
+    background: rgba(23,25,30,.86); border: 1px solid var(--line); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); transition: opacity .3s; }
+  body.viewing .chatbtn { bottom: auto; top: 50%; transform: translateY(-50%); }
+  .chatbtn.faded { opacity: 0; }
+  .badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px;
+    font-size: 11px; font-weight: 600; line-height: 18px; background: var(--accent); color: var(--accent-ink); }
+  .chat { position: fixed; top: 0; right: 0; bottom: 0; z-index: 31; width: min(320px, 88vw); display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) 0;
+    background: rgba(14,15,18,.92); border-left: 1px solid var(--line); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    transform: translateX(100%); visibility: hidden; transition: transform .2s, visibility 0s .2s; }
+  .chat.open { transform: none; visibility: visible; transition: transform .2s; }
+  .chat header { display: flex; align-items: center; justify-content: space-between; padding: 10px 8px 10px 14px; border-bottom: 1px solid var(--line); font-weight: 600; }
+  .chat header button { background: transparent; padding: 2px 10px; font-size: 20px; color: var(--muted); }
+  .chatlog { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; font-size: 15px; }
+  .chatlog:empty::before { content: "No messages yet"; color: var(--muted); }
+  .chatlog .who { font-size: 12px; color: var(--muted); }
+  .chatlog .me .who { color: var(--accent); }
+  .chatlog .txt { overflow-wrap: anywhere; white-space: pre-wrap; }
+  .reacts { display: flex; justify-content: space-between; padding: 6px 10px; border-top: 1px solid var(--line); }
+  .reacts button { background: transparent; padding: 5px 6px; font-size: 22px; line-height: 1; }
+  .chat form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--line); }
+  .chat form button { flex: none; }
+  .floats { position: fixed; inset: 0; z-index: 29; overflow: hidden; pointer-events: none; }
+  .float { position: absolute; bottom: 90px; font-size: 40px; line-height: 1; animation: rise 2.4s ease-out forwards; }
+  @keyframes rise { from { transform: translateY(0) scale(.6); opacity: 0; } 15% { transform: translateY(-6vh) scale(1.1); opacity: 1; } to { transform: translateY(-55vh) scale(1); opacity: 0; } }
 </style>
 </head>
 <body>
@@ -189,6 +217,18 @@
   </div>
 </section>
 
+<!-- ============ CHAT (both roles) ============ -->
+<div id="chatUI" class="hidden">
+  <div class="floats" id="floats"></div>
+  <button id="chatBtn" class="chatbtn" aria-label="Chat">💬<span id="chatBadge" class="badge hidden"></span></button>
+  <aside id="chat" class="chat">
+    <header><span>Chat</span><button id="chatClose" aria-label="Close chat">×</button></header>
+    <div id="chatLog" class="chatlog"></div>
+    <div id="reacts" class="reacts"></div>
+    <form id="chatForm"><input id="chatInput" type="text" maxlength="500" placeholder="Message" autocomplete="off" enterkeyhint="send"><button class="primary">Send</button></form>
+  </aside>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -216,6 +256,70 @@
   const fmt = s => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2, "0")}:${x}` : `${m}:${x}`; };
   let toastTimer;
   const toast = msg => { const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 2600); };
+
+  // ------------------------------------------------------------------ chat and reactions
+  // Text and reactions arrive from other people, so they are cleaned and capped before use and
+  // only ever shown with textContent. Reactions must be one of this fixed set.
+  const REACTIONS = ["😂", "❤️", "😮", "😢", "👏", "🔥"];
+  const cleanText = s => Array.from((typeof s === "string" ? s : "").slice(0, 4000).replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, " ").trim()).slice(0, 500).join("");
+  // At most n calls per ms; anything faster is dropped.
+  const limiter = (n, ms) => { let seen = []; return () => { const t = Date.now(); seen = seen.filter(x => t - x < ms); if (seen.length >= n) return false; seen.push(t); return true; }; };
+
+  // out.chat(text) and out.react(emoji) send to the other side. Returns what the page needs to show incoming ones.
+  function makeChat(out) {
+    const ui = $("chatUI"), log = $("chatLog"), input = $("chatInput");
+    let unread = 0, on = false;
+    const isOpen = () => $("chat").classList.contains("open");
+    const setUnread = n => { unread = n; show($("chatBadge"), n > 0); $("chatBadge").textContent = n > 9 ? "9+" : String(n); if (n) $("chatBtn").classList.remove("faded"); };
+    const open = yes => {
+      $("chat").classList.toggle("open", yes); show($("chatBtn"), !yes);
+      if (yes) { setUnread(0); log.scrollTop = log.scrollHeight; if (!input.disabled) input.focus(); } else input.blur();
+    };
+    function add(who, text, mine) {
+      const row = document.createElement("div"); if (mine) row.className = "me";
+      const head = document.createElement("div"); head.className = "who";
+      head.textContent = `${who} · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+      const body = document.createElement("div"); body.className = "txt"; body.textContent = text;
+      row.append(head, body); log.append(row);
+      while (log.childElementCount > 200) log.firstElementChild.remove();
+      log.scrollTop = log.scrollHeight;
+      if (mine || isOpen()) return;
+      setUnread(unread + 1);
+      toast(`${who}: ${text.length > 60 ? text.slice(0, 60) + "…" : text}`);
+    }
+    function float(emoji) {
+      if ($("floats").childElementCount >= 20) return;
+      const el = document.createElement("div"); el.className = "float"; el.textContent = emoji;
+      el.style.right = `${(isOpen() && innerWidth > 700 ? 340 : 60) + Math.random() * Math.min(140, innerWidth / 3)}px`;
+      $("floats").append(el);
+      setTimeout(() => el.remove(), 2500);
+    }
+    const enable = yes => { on = yes; input.disabled = !yes; input.placeholder = yes ? "Message" : "Not connected…"; if (yes) show(ui); };
+    const reactOut = limiter(5, 1000);
+    REACTIONS.forEach(emoji => {
+      const b = document.createElement("button"); b.type = "button"; b.textContent = emoji;
+      b.onclick = () => { if (!on || !reactOut()) return; out.react(emoji); float(emoji); };
+      $("reacts").append(b);
+    });
+    $("chatBtn").onclick = () => open(true);
+    $("chatClose").onclick = () => open(false);
+    input.addEventListener("keydown", e => { if (e.key === "Escape") open(false); });
+    $("chatForm").onsubmit = e => {
+      e.preventDefault();
+      const text = cleanText(input.value);
+      if (!text || !on) return;
+      input.value = ""; out.chat(text); add("You", text, true);
+    };
+    // In fullscreen only the fullscreen element's own contents are drawn, so the chat moves into it.
+    const refit = () => {
+      const fs = document.fullscreenElement || document.webkitFullscreenElement;
+      const parent = fs && !/^(VIDEO|IFRAME)$/.test(fs.tagName) ? fs : document.body;
+      if (ui.parentNode !== parent) parent.append(ui);
+    };
+    document.addEventListener("fullscreenchange", refit); document.addEventListener("webkitfullscreenchange", refit);
+    enable(false);
+    return { add, float, enable, btn: $("chatBtn") };
+  }
 
   function ytId(url) {
     const m = String(url).match(/(?:youtu\.be\/|v=|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/);
@@ -320,7 +424,7 @@
     let stream = null;            // captureStream() for local files
     let autoPaused = false;
     const stalled = new Set();
-    const viewers = new Map();    // peerId -> { conn, call, wantsStream, name, ok, row }; ok = allowed by the host
+    const viewers = new Map();    // peerId -> { conn, call, wantsStream, name, ok, row, limit }; ok = allowed by the host
     const passes = new Set();     // handed to allowed viewers so a dropped connection can rejoin without asking again
     const MAX_PENDING = 5;
     let peer;
@@ -339,6 +443,24 @@
     };
     const pushState = () => { S.v++; broadcast({ type: "state", s: S }); };
     const sync = () => { anchor(); pushState(); };
+
+    // Chat goes through the host: it shows each message and passes it on to the other viewers,
+    // under the name the host allowed, so a viewer can't speak as someone else.
+    const chat = makeChat({
+      chat: text => broadcast({ type: "chat", name: HOST_NAME, text }),
+      react: emoji => broadcast({ type: "react", emoji }),
+    });
+    chat.enable(true);
+    const relay = (from, msg) => viewers.forEach(v => { if (v !== from) send(v, msg); });
+    function onChat(me, m) {
+      const text = cleanText(m.text);
+      if (!text || !me.limit()) return;
+      chat.add(me.name, text, false); relay(me, { type: "chat", name: me.name, text });
+    }
+    function onReact(me, m) {
+      if (!REACTIONS.includes(m.emoji) || !me.limit()) return;
+      chat.float(m.emoji); relay(me, { type: "react", emoji: m.emoji });
+    }
 
     const setStatus = () => {
       const n = [...viewers.values()].filter(v => v.ok && v.conn.open).length;
@@ -491,7 +613,7 @@
       peer = new Peer(PREFIX + code, { debug: 1 });
       peer.on("open", setStatus);
       peer.on("connection", conn => {
-        const me = { conn, call: null, wantsStream: true, name: "", ok: false, row: null };
+        const me = { conn, call: null, wantsStream: true, name: "", ok: false, row: null, limit: limiter(12, 4000) };
         let greeted = false;
         // The viewer has to introduce itself first; a connection that never does is closed.
         const noHello = setTimeout(() => { if (!greeted) conn.close(); }, 15000);
@@ -519,6 +641,8 @@
           else if (m.type === "cmd") onCmd(m);
           else if (m.type === "stall") onStall(conn.peer, true);
           else if (m.type === "ready") onStall(conn.peer, false);
+          else if (m.type === "chat") onChat(me, m);
+          else if (m.type === "react") onReact(me, m);
           else if (m.type === "want-stream") {
             const v = me;
             if (v.wantsStream) callViewer(conn.peer); else if (v.call) { v.call.close(); v.call = null; }
@@ -581,6 +705,9 @@
       show($("vSpin"), spin); show($("joinBtn"), join); show($("nameForm"), false);
     };
     const status = (txt, on) => { $("vStatus").textContent = txt; $("vDot").className = "dot " + (on ? "on" : ""); };
+    const say = msg => { if (conn && conn.open) conn.send(msg); };
+    const chat = makeChat({ chat: text => say({ type: "chat", text }), react: emoji => say({ type: "react", emoji }) });
+    const chatIn = limiter(20, 4000);
 
     // ---- join gate (unlocks sound on iPhone/iPad)
     $("joinBtn").onclick = () => {
@@ -730,8 +857,8 @@
 
     // ---- auto-hide chrome
     let fadeT;
-    const bump = () => { $("vbar").classList.remove("faded"); $("sControls").classList.remove("faded"); clearTimeout(fadeT);
-      fadeT = setTimeout(() => { if (mode) { $("vbar").classList.add("faded"); $("sControls").classList.add("faded"); } }, 3500); };
+    const bump = () => { $("vbar").classList.remove("faded"); $("sControls").classList.remove("faded"); chat.btn.classList.remove("faded"); clearTimeout(fadeT);
+      fadeT = setTimeout(() => { if (mode) { $("vbar").classList.add("faded"); $("sControls").classList.add("faded"); if ($("chatBadge").classList.contains("hidden")) chat.btn.classList.add("faded"); } }, 3500); };
     document.addEventListener("pointerdown", bump); document.addEventListener("pointermove", e => e.pointerType === "mouse" && bump());
 
     // ---- connection
@@ -793,7 +920,7 @@
         if (!m || typeof m !== "object") return;
         if (m.type === "pending") { status(`Asking ${HOST_NAME}…`, false); overlay(`Asking ${HOST_NAME}…`, `You're in as soon as ${HOST_NAME} lets you in.`); }
         else if (m.type === "welcome") {
-          pass = m.pass;
+          pass = m.pass; chat.enable(true);
           status(`Watching with ${HOST_NAME}`, true);
           bestRtt = Infinity; for (let i = 0; i < 6; i++) setTimeout(ping, i * 150);
           if (!joined) overlay(`${HOST_NAME}'s watch party`, "", { spin: false, join: true });
@@ -807,10 +934,13 @@
         }
         else if (m.type === "pong") onPong(m);
         else if (m.type === "state") onState(m.s);
+        else if (m.type === "chat") { const text = cleanText(m.text); if (text && chatIn()) chat.add(cleanName(m.name), text, false); }
+        else if (m.type === "react") { if (REACTIONS.includes(m.emoji) && chatIn()) chat.float(m.emoji); }
         else if (m.type === "ended") { status(`${HOST_NAME} closed the party`, false); }
       });
       conn.on("close", () => {
         if (conn !== c) return; // stale connection (already replaced): ignore, as offscreen.js does
+        chat.enable(false);
         status("Reconnecting…", false); redial();
       });
     }

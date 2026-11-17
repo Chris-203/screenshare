@@ -16,6 +16,14 @@
   const send = msg => chrome.runtime.sendMessage({ to: "bg", cmd: "send", msg }).catch(() => {});
   const suppress = (ms = 1000) => { suppressUntil = Date.now() + ms; };
 
+  // Chat text and reactions come from the other peer, so they are cleaned and capped before use
+  // and only ever shown with textContent. Reactions must be one of this fixed set.
+  const REACTIONS = ["😂", "❤️", "😮", "😢", "👏", "🔥"];
+  const MAX_CHAT = 500;
+  const cleanText = s => Array.from((typeof s === "string" ? s : "").slice(0, 4000).replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, " ").trim()).slice(0, MAX_CHAT).join("");
+  // At most n calls per ms; anything faster is dropped.
+  const limiter = (n, ms) => { let seen = []; return () => { const t = Date.now(); seen = seen.filter(x => t - x < ms); if (seen.length >= n) return false; seen.push(t); return true; }; };
+
   // ------------------------------------------------------------ on-page UI (shadow DOM so site CSS can't touch it)
   const hostEl = document.createElement("div");
   hostEl.style.cssText = "all:initial;position:fixed;z-index:2147483647;left:0;top:0;width:0;height:0;";
@@ -35,6 +43,8 @@
         display: flex; gap: 10px; align-items: center; max-width: 80vw; }
       .toast.show { transform: translate(-50%, 0); }
       .reqs { position: fixed; right: 18px; top: 18px; display: flex; flex-direction: column; gap: 8px; }
+      .reqs.beside { right: 338px; }
+      @media (max-width: 700px) { .reqs.beside { right: 18px; z-index: 1; } }
       .req { display: flex; gap: 8px; align-items: center; max-width: 340px;
         font: 500 14px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #eceef2;
         background: rgba(18,19,23,.92); border: 1px solid #2a2d35; border-radius: 14px; padding: 8px 10px 8px 14px; }
@@ -42,10 +52,51 @@
       .req button { all: unset; cursor: pointer; background: #2a2d35; color: #eceef2; font-weight: 600; padding: 5px 12px; border-radius: 999px; }
       .req button.yes { background: #a78bfa; color: #140b2e; }
       .toast button { all: unset; cursor: pointer; background: #a78bfa; color: #140b2e; font-weight: 600; padding: 5px 12px; border-radius: 999px; }
+      [hidden] { display: none !important; }
+      .chatbtn { all: unset; box-sizing: border-box; position: fixed; right: 14px; top: 50%; transform: translateY(-50%); width: 44px; height: 44px;
+        display: grid; place-items: center; cursor: pointer; font-size: 20px; line-height: 1; border-radius: 50%;
+        background: rgba(18,19,23,.86); border: 1px solid #2a2d35; backdrop-filter: blur(10px); transition: opacity .4s; }
+      .chatbtn.dim { opacity: 0; }
+      .chatbtn:focus-visible { outline: 2px solid #a78bfa; }
+      .badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; box-sizing: border-box; padding: 0 5px; border-radius: 9px;
+        font: 600 11px/18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-align: center; background: #a78bfa; color: #140b2e; }
+      .panel { position: fixed; top: 0; right: 0; bottom: 0; width: 320px; max-width: 90vw; box-sizing: border-box; display: flex; flex-direction: column;
+        font: 400 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #eceef2;
+        background: rgba(14,15,18,.9); border-left: 1px solid #2a2d35; backdrop-filter: blur(12px);
+        transform: translateX(100%); visibility: hidden; transition: transform .2s, visibility 0s .2s; }
+      .panel.open { transform: none; visibility: visible; transition: transform .2s; }
+      .panel * { box-sizing: border-box; }
+      .head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid #2a2d35; font-weight: 600; }
+      .head button { all: unset; cursor: pointer; padding: 2px 8px; border-radius: 8px; color: #9095a1; font-size: 18px; line-height: 1; }
+      .head button:hover { color: #eceef2; }
+      .log { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+      .log:empty::before { content: "No messages yet"; color: #9095a1; }
+      .who { font-size: 12px; color: #9095a1; }
+      .me .who { color: #a78bfa; }
+      .txt { overflow-wrap: anywhere; white-space: pre-wrap; }
+      .reacts { display: flex; justify-content: space-between; padding: 6px 10px; border-top: 1px solid #2a2d35; }
+      .reacts button { all: unset; cursor: pointer; font-size: 22px; line-height: 1; padding: 5px 6px; border-radius: 8px; }
+      .reacts button:hover { background: #2a2d35; }
+      .panel form { display: flex; gap: 8px; margin: 0; padding: 10px; border-top: 1px solid #2a2d35; }
+      .panel input { all: unset; flex: 1; min-width: 0; font: inherit; color: #eceef2; background: #0e0f12; border: 1px solid #2a2d35; border-radius: 10px; padding: 9px 12px; cursor: text; }
+      .panel input:focus { border-color: #a78bfa; }
+      .panel input:disabled { opacity: .5; }
+      .panel form button { all: unset; cursor: pointer; background: #a78bfa; color: #140b2e; font-weight: 600; padding: 9px 14px; border-radius: 10px; }
+      .floats { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; overflow: hidden; pointer-events: none; }
+      .float { position: absolute; bottom: 90px; font-size: 40px; line-height: 1; animation: rise 2.4s ease-out forwards; }
+      @keyframes rise { from { transform: translateY(0) scale(.6); opacity: 0; } 15% { transform: translateY(-6vh) scale(1.1); opacity: 1; } to { transform: translateY(-55vh) scale(1); opacity: 0; } }
     </style>
     <div class="pill dim" id="pill"><span class="dot" id="dot"></span><span id="ptxt"></span></div>
     <div class="toast" id="toast"><span id="ttxt"></span><button id="tbtn" hidden></button></div>
-    <div class="reqs" id="reqs"></div>`;
+    <div class="reqs" id="reqs"></div>
+    <div class="floats" id="floats"></div>
+    <button class="chatbtn dim" id="cbtn" title="Chat" aria-label="Chat">💬<span class="badge" id="badge" hidden></span></button>
+    <div class="panel" id="panel">
+      <div class="head"><span>Chat</span><button id="cclose" title="Close" aria-label="Close chat">×</button></div>
+      <div class="log" id="log"></div>
+      <div class="reacts" id="reacts"></div>
+      <form id="cform"><input id="cin" type="text" maxlength="${MAX_CHAT}" placeholder="Message" autocomplete="off" spellcheck="false"><button>Send</button></form>
+    </div>`;
   const $ = id => root.getElementById(id);
   let toastT, pillT;
   function toast(text, btn, onClick, ms = 2800) {
@@ -85,6 +136,77 @@
   }
   document.addEventListener("fullscreenchange", () => active && mountUI());
 
+  // ------------------------------------------------------------ chat and reactions
+  // Players react to clicks and keys anywhere on the page (space pauses, F leaves fullscreen).
+  // Clicks inside our UI stop at the shadow root. Keys typed into it are stopped at the window,
+  // before the page's own listeners; typing still works because that is the browser's default action.
+  ["click", "dblclick", "mousedown", "mouseup", "pointerdown", "pointerup", "touchstart", "touchend", "wheel", "contextmenu"]
+    .forEach(type => root.addEventListener(type, e => e.stopPropagation(), { passive: true }));
+  ["keydown", "keyup", "keypress"].forEach(type => window.addEventListener(type, e => {
+    if (e.target !== hostEl) return;
+    e.stopImmediatePropagation();
+    if (type === "keydown" && e.key === "Escape") openChat(false);
+  }, true));
+
+  let unread = 0, btnT;
+  const chatOpen = () => $("panel").classList.contains("open");
+  function showBtn() {
+    $("cbtn").classList.remove("dim"); clearTimeout(btnT);
+    btnT = setTimeout(() => { if (!unread) $("cbtn").classList.add("dim"); }, 3000);
+  }
+  function setUnread(n) { unread = n; $("badge").hidden = !n; $("badge").textContent = n > 9 ? "9+" : String(n); if (n) showBtn(); }
+  function openChat(on) {
+    $("panel").classList.toggle("open", on);
+    $("reqs").classList.toggle("beside", on); // keep the host's Allow / Deny prompts clear of the open panel
+    $("cbtn").hidden = on;
+    if (on) { setUnread(0); $("log").scrollTop = $("log").scrollHeight; if (!$("cin").disabled) $("cin").focus(); }
+    else { $("cin").blur(); showBtn(); }
+  }
+  function addMsg(who, text, mine) {
+    const row = document.createElement("div"); row.className = mine ? "me" : "";
+    const head = document.createElement("div"); head.className = "who";
+    head.textContent = `${who} · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    const body = document.createElement("div"); body.className = "txt"; body.textContent = text;
+    row.append(head, body);
+    const log = $("log"); log.append(row);
+    while (log.childElementCount > 200) log.firstElementChild.remove();
+    log.scrollTop = log.scrollHeight;
+  }
+  function float(emoji) {
+    const box = $("floats");
+    if (box.childElementCount >= 20) return;
+    const el = document.createElement("div"); el.className = "float"; el.textContent = emoji;
+    el.style.right = `${(chatOpen() ? 340 : 70) + Math.random() * 140}px`;
+    box.append(el);
+    setTimeout(() => el.remove(), 2500);
+  }
+  const reactOut = limiter(5, 1000), reactIn = limiter(10, 1000), chatIn = limiter(12, 4000);
+  REACTIONS.forEach(emoji => {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = emoji;
+    b.onclick = () => { if (linkStatus !== "connected" || !reactOut()) return; send({ type: "react", emoji }); float(emoji); };
+    $("reacts").append(b);
+  });
+  $("cbtn").onclick = () => openChat(true);
+  $("cclose").onclick = () => openChat(false);
+  $("cform").onsubmit = e => {
+    e.preventDefault();
+    const text = cleanText($("cin").value);
+    if (!text || linkStatus !== "connected") return;
+    $("cin").value = "";
+    send({ type: "chat", text });
+    addMsg("You", text, true);
+  };
+  function onChat(m) {
+    const text = cleanText(m.text);
+    if (!text || !chatIn()) return;
+    const who = nameOf(m); // in a party of several, partner is everyone's names; the host stamps each message with its sender
+    addMsg(who, text, false);
+    if (chatOpen()) return;
+    setUnread(unread + 1);
+    toast(`${who}: ${text.length > 80 ? text.slice(0, 80) + "…" : text}`, "Reply", () => openChat(true), 5000);
+  }
+  function onReact(m) { if (REACTIONS.includes(m.emoji) && reactIn()) float(m.emoji); }
+
   function renderStatus() {
     const map = {
       connected: [`Synced with ${partner}`, true],
@@ -98,6 +220,8 @@
     };
     const [t, on] = map[linkStatus] || ["Watch Sync", false];
     pill(t, on, !on);
+    $("cin").disabled = !on;
+    $("cin").placeholder = on ? "Message" : "Waiting for your partner…";
   }
 
   // ------------------------------------------------------------ finding the right <video>
@@ -236,6 +360,8 @@
     if (m.type === "play" || m.type === "pause" || m.type === "seek") applyRemote(m);
     else if (m.type === "tick") onTick(m);
     else if (m.type === "nav") onNav(m);
+    else if (m.type === "chat") onChat(m);
+    else if (m.type === "react") onReact(m);
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -253,11 +379,15 @@
       setInterval(() => { if (location.href !== lastHref) { lastHref = location.href; sendNav(); } }, 1000),
     ];
     bind(); sendNav();
+    document.addEventListener("mousemove", showBtn, { passive: true });
+    showBtn();
   }
   function deactivate() {
     active = false; timers.forEach(clearInterval); timers = [];
     off.splice(0).forEach(f => f()); video = null;
     hostEl.remove();
+    document.removeEventListener("mousemove", showBtn);
+    openChat(false); setUnread(0); $("log").replaceChildren(); $("floats").replaceChildren();
   }
 
   chrome.runtime.onMessage.addListener((m, _sender, reply) => {
