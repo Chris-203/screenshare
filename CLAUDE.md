@@ -17,14 +17,14 @@ Everything is static: no build step, no package.json, no bundler, no test suite.
 
 ## How the pieces talk
 
-All three tools use PeerJS 1.5.4 and its free public broker for the handshake; media and data then go peer to peer. Peer IDs are a per-tool prefix plus a short code: `chris203-ss-` (screen share), `chris203-wp-` (watch party), `chris203-ws-` (extension, with `-host` or `-guest` appended). The broker is public, so anyone who knows or guesses an ID can connect to it. Treat everything arriving on a connection as untrusted input.
+All three tools use PeerJS 1.5.4 and its free public broker for the handshake; media and data then go peer to peer. Peer IDs are a per-tool prefix plus a short code: `chris203-ss-` (screen share), `chris203-wp-` (watch party), `chris203-ws-` (extension, with `-host` or `-guest-<random id>` appended). The broker is public, so anyone who knows or guesses an ID can connect to it. Treat everything arriving on a connection as untrusted input.
 
 `index.html` and `party.html` are each one file with one inline `<script>` that holds both roles: `startHost()` and `startViewer(code)`. The host is the source of truth. In the watch party the host broadcasts state, and viewers estimate the clock offset with ping/pong and correct drift with small playback-rate nudges or a seek.
 
 The extension has four contexts that only talk through `chrome.runtime` messages. A message carries `to: "bg"` or `to: "off"`; a message with no `to` is for the content script.
 
 - `background.js`: service worker and router. State lives in `chrome.storage.session` under the key `ws` because the worker can be stopped at any time. Do not keep state in module variables there.
-- `offscreen.js` with `offscreen.html`: holds the PeerJS connection so it survives tab navigation, and translates the partner's timestamps into the local clock.
+- `offscreen.js` with `offscreen.html`: holds the PeerJS connections so they survive tab navigation. The host is the hub: each guest connects only to the host, waits for the host's Allow, and the host relays one guest's messages to the others. The host keeps a clock offset per guest and every guest keeps one for the host, so timestamps are translated into the local clock at each hop.
 - `content.js`: runs in the top frame of the sites listed in `manifest.json`. Watches the page's `<video>`, sends local play, pause and seek, applies the partner's. Its UI is in a closed shadow root.
 - `netflix-main.js`: runs in Netflix's own page context (`"world": "MAIN"`) because setting `currentTime` directly crashes the Netflix player. `content.js` reaches it with `window.postMessage`.
 - `popup.js` with `popup.html`: start, join and leave.

@@ -25,12 +25,15 @@
   .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(52,211,153,.2); }
   .err { color: #fca5a5; font-size: 12.5px; }
   .code-in { text-transform: uppercase; letter-spacing: .14em; }
+  .req { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; font-size: 13px; }
+  .req span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .req button { width: auto; padding: 6px 10px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Watch Sync</h1>
-  <p class="muted" style="margin:0 0 14px">Play, pause and skip together. Each of you uses your own account.</p>
+  <p class="muted" style="margin:0 0 14px">Play, pause and skip together. Everyone uses their own account.</p>
 
   <!-- not in a party -->
   <div id="idle" class="gap hidden">
@@ -42,9 +45,10 @@
 
   <!-- in a party -->
   <div id="inParty" class="hidden">
-    <div class="muted" style="text-align:center" id="codeHint">Send this code to your partner</div>
+    <div class="muted" style="text-align:center" id="codeHint">Send this code to everyone joining</div>
     <div class="code" id="codeOut"></div>
     <div class="status"><span class="dot" id="dot"></span><span id="stat"></span></div>
+    <div id="requests" class="hidden"></div>
     <div class="gap">
       <button id="bind" class="hidden">Sync this tab instead</button>
       <button id="copy">Copy code</button>

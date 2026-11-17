@@ -8,6 +8,7 @@
   const isNetflix = /(^|\.)netflix\.com$/.test(location.hostname);
 
   let active = false, role = null, partner = "Partner", linkStatus = "idle";
+  let requests = [];   // host only: people waiting for Allow / Deny, [{ id, name }]
   let video = null, suppressUntil = 0, pausedMismatch = 0;
   const off = [];
 
@@ -33,10 +34,18 @@
         background: rgba(18,19,23,.92); border: 1px solid #2a2d35; border-radius: 999px; padding: 10px 16px;
         display: flex; gap: 10px; align-items: center; max-width: 80vw; }
       .toast.show { transform: translate(-50%, 0); }
+      .reqs { position: fixed; right: 18px; top: 18px; display: flex; flex-direction: column; gap: 8px; }
+      .req { display: flex; gap: 8px; align-items: center; max-width: 340px;
+        font: 500 14px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #eceef2;
+        background: rgba(18,19,23,.92); border: 1px solid #2a2d35; border-radius: 14px; padding: 8px 10px 8px 14px; }
+      .req span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+      .req button { all: unset; cursor: pointer; background: #2a2d35; color: #eceef2; font-weight: 600; padding: 5px 12px; border-radius: 999px; }
+      .req button.yes { background: #a78bfa; color: #140b2e; }
       .toast button { all: unset; cursor: pointer; background: #a78bfa; color: #140b2e; font-weight: 600; padding: 5px 12px; border-radius: 999px; }
     </style>
     <div class="pill dim" id="pill"><span class="dot" id="dot"></span><span id="ptxt"></span></div>
-    <div class="toast" id="toast"><span id="ttxt"></span><button id="tbtn" hidden></button></div>`;
+    <div class="toast" id="toast"><span id="ttxt"></span><button id="tbtn" hidden></button></div>
+    <div class="reqs" id="reqs"></div>`;
   const $ = id => root.getElementById(id);
   let toastT, pillT;
   function toast(text, btn, onClick, ms = 2800) {
@@ -50,6 +59,26 @@
     $("pill").classList.remove("dim"); clearTimeout(pillT);
     if (!stay) pillT = setTimeout(() => $("pill").classList.add("dim"), 4000);
   }
+  // The host answers people asking to join right on the page, so there's no need to leave the video.
+  let requestsKey = "";
+  function renderRequests() {
+    const list = role === "host" ? requests : [];
+    const key = list.map(r => r.id).join("|");
+    if (key === requestsKey) return;   // rebuilt only on a change, so a button is never swapped out from under a click
+    requestsKey = key;
+    const box = $("reqs");
+    box.textContent = "";
+    for (const r of list) {
+      const row = document.createElement("div"); row.className = "req";
+      const who = document.createElement("span"); who.textContent = `${r.name} wants to join`;
+      const yes = document.createElement("button"); yes.className = "yes"; yes.textContent = "Allow";
+      const no = document.createElement("button"); no.textContent = "Deny";
+      const answer = allow => () => { row.remove(); chrome.runtime.sendMessage({ to: "bg", cmd: "decide", id: r.id, allow }).catch(() => {}); };
+      yes.onclick = answer(true); no.onclick = answer(false);
+      row.append(who, yes, no);
+      box.append(row);
+    }
+  }
   function mountUI() {
     const parent = document.fullscreenElement && document.fullscreenElement.tagName !== "VIDEO" ? document.fullscreenElement : document.documentElement;
     if (hostEl.parentNode !== parent) parent.appendChild(hostEl);
@@ -59,7 +88,9 @@
   function renderStatus() {
     const map = {
       connected: [`Synced with ${partner}`, true],
-      waiting: ["Waiting for your partner to join…", false],
+      waiting: ["Waiting for someone to join…", false],
+      asking: ["Asking the host to let you in…", false],
+      denied: ["The host didn't let you in", false],
       connecting: ["Connecting…", false],
       "partner-offline": [`Waiting for ${partner === "Partner" ? "the host" : partner}…`, false],
       reconnecting: ["Reconnecting…", false],
@@ -99,7 +130,7 @@
     if (e.data.op === "pause") video.pause();
   });
   const nf = (op, t) => window.postMessage({ __ws: "nf", op, t }, "*");
-  const doPlay = () => { if (isNetflix) nf("play"); else video.play().catch(() => toast(`${partner} pressed play — click play to catch up`)); };
+  const doPlay = who => { if (isNetflix) nf("play"); else video.play().catch(() => toast(`${who || partner} pressed play — click play to catch up`)); };
   const doPause = () => { if (isNetflix) nf("pause"); else video.pause(); };
   const doSeek = t => { if (isNetflix) nf("seek", t); else video.currentTime = Math.max(0, t); };
 
@@ -112,7 +143,10 @@
   }
 
   // ------------------------------------------------------------ partner → local
+  // With more than two people, the host stamps each message with who it came from.
+  const nameOf = m => (typeof m.from === "string" && m.from.trim().slice(0, 20)) || partner;
   function applyRemote(m) {
+    const partner = nameOf(m);
     bind();
     if (!video) return toast(`${partner} is playing something, open the same title to sync`);
     const elapsed = Math.max(0, (Date.now() - m.at) / 1000);
@@ -120,7 +154,7 @@
     if (m.type === "play") {
       const target = m.t + elapsed;
       if (Math.abs(video.currentTime - target) > 0.6) doSeek(target);
-      if (video.paused) doPlay();
+      if (video.paused) doPlay(partner);
       toast(`${partner} pressed play`);
     } else if (m.type === "pause") {
       if (!video.paused) doPause();
@@ -190,6 +224,7 @@
   function onNav(m) {
     const theirs = navTarget(m && m.url);
     if (!theirs) return;
+    const partner = nameOf(m);
     if (theirs.hostname === location.hostname && theirs.pathname === location.pathname) return;
     const title = String(m.title || "").slice(0, 120).replace(/\s*[|\-–—]\s*(Netflix|Disney\+|Max|Hulu|Prime Video|YouTube|Peacock|Paramount\+).*$/i, "").trim();
     toast(`${partner} is on ${title || theirs.hostname}`, "Open", () => { location.href = theirs.href; }, 9000);
@@ -209,7 +244,8 @@
   function activate(info) {
     active = true; role = info.role; if (info.partnerName) partner = info.partnerName;
     linkStatus = info.status || linkStatus;
-    mountUI(); renderStatus();
+    requests = Array.isArray(info.requests) ? info.requests : [];
+    mountUI(); renderStatus(); renderRequests();
     timers.forEach(clearInterval);
     timers = [
       setInterval(bind, 1000),
@@ -232,7 +268,13 @@
     else if (m.type === "peer") onPeer(m.msg);
     else if (m.type === "status") {
       const was = linkStatus; linkStatus = m.status; if (m.partnerName) partner = m.partnerName;
-      if (active) { renderStatus(); if (was !== "connected" && linkStatus === "connected") toast(`${partner} joined`); }
+      requests = Array.isArray(m.requests) ? m.requests : [];
+      if (active) {
+        renderStatus(); renderRequests();
+        // The host is told who just came in; a guest sees its own link come up.
+        if (m.joined) toast(`${m.joined} joined`);
+        else if (role !== "host" && was !== "connected" && linkStatus === "connected") toast(`Synced with ${partner}`);
+      }
     }
   });
 
