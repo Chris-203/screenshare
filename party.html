@@ -10,6 +10,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect x='6' y='12' width='52' height='36' rx='6' fill='%23a78bfa'/><path d='M27 22v16l13-8z' fill='%23140b2e'/></svg>">
 <script src="extension/peerjs.min.js"></script>
 <script src="extension/ice.js"></script>
+<script src="quality.js"></script>
 <style>
   :root {
     --bg: #0e0f12; --panel: #17191e; --line: #2a2d35; --text: #eceef2;
@@ -214,6 +215,7 @@
     <button id="sPlay">▶</button>
     <input id="sSeek" type="range" min="0" max="100" step="0.1" value="0">
     <span class="time" id="sTime">0:00 / 0:00</span>
+    <button id="sQuality">Quality</button>
     <button id="sFs">⛶</button>
   </div>
 </section>
@@ -535,24 +537,26 @@
       stream.addEventListener("addtrack", () => { clearTimeout(t); t = setTimeout(callStreamViewers, 300); });
       callStreamViewers();
     }
-    function tune(call) {
-      const pc = call && call.peerConnection; if (!pc) return;
+    // Video size and bitrate are the viewer's pick (quality.js); audio stays at 192 kbps.
+    function tune(v) {
+      const pc = v && v.call && v.call.peerConnection; if (!pc) return;
       pc.getSenders().forEach(s => {
         if (!s.track) return;
+        if (s.track.kind === "video") { if ("contentHint" in s.track) s.track.contentHint = "motion"; return; }
         const p = s.getParameters();
         if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-        if (s.track.kind === "video") { p.encodings[0].maxBitrate = 8_000_000; p.degradationPreference = "balanced"; if ("contentHint" in s.track) s.track.contentHint = "motion"; }
-        else { p.encodings[0].maxBitrate = 192_000; }
+        p.encodings[0].maxBitrate = 192_000;
         s.setParameters(p).catch(() => {});
       });
+      Quality.apply(pc, v.quality, 8, p => { p.degradationPreference = "balanced"; });
     }
     function callViewer(id) {
       const v = viewers.get(id);
       if (!v || !v.ok || !v.conn.open || !v.wantsStream || !stream || !stream.getTracks().length) return;
       if (v.call) v.call.close();
       v.call = peer.call(id, stream);
-      setTimeout(() => tune(v.call), 800);
-      setTimeout(() => tune(v.call), 3000);
+      setTimeout(() => tune(v), 800);
+      setTimeout(() => tune(v), 3000);
     }
     const callStreamViewers = () => viewers.forEach((_, id) => callViewer(id));
 
@@ -614,7 +618,7 @@
       peer = new Peer(PREFIX + code, { debug: 1, config: ICE.config });
       peer.on("open", setStatus);
       peer.on("connection", conn => {
-        const me = { conn, call: null, wantsStream: true, name: "", ok: false, row: null, limit: limiter(12, 4000) };
+        const me = { conn, call: null, wantsStream: true, name: "", ok: false, row: null, limit: limiter(12, 4000), quality: Quality.clean() };
         let greeted = false;
         // The viewer has to introduce itself first; a connection that never does is closed.
         const noHello = setTimeout(() => { if (!greeted) conn.close(); }, 15000);
@@ -623,7 +627,7 @@
           if (m.type === "hello") {
             if (greeted) return;
             greeted = true; clearTimeout(noHello);
-            me.name = cleanName(m.name);
+            me.name = cleanName(m.name); me.quality = Quality.clean(m.q);
             const old = viewers.get(conn.peer);
             if (old && old !== me) { settle(old); if (old.call) old.call.close(); old.conn.close(); }
             viewers.set(conn.peer, me);
@@ -644,6 +648,7 @@
           else if (m.type === "ready") onStall(conn.peer, false);
           else if (m.type === "chat") onChat(me, m);
           else if (m.type === "react") onReact(me, m);
+          else if (m.type === "quality") { if (me.limit()) { me.quality = Quality.clean(m.q); tune(me); } }
           else if (m.type === "want-stream") {
             const v = me;
             if (v.wantsStream) callViewer(conn.peer); else if (v.call) { v.call.close(); v.call = null; }
@@ -836,6 +841,7 @@
       else if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
       else if (sv.webkitEnterFullscreen) sv.webkitEnterFullscreen();
     };
+    const quality = Quality.mount($("sQuality"), 8, "wp-quality", q => { if (conn && conn.open) conn.send({ type: "quality", q }); });
     function renderStreamUI() {
       if (mode !== "stream" || !S) return;
       $("sPlay").textContent = S.paused ? "▶" : "❚❚";
@@ -913,7 +919,7 @@
       if (old) { try { old.close(); } catch {} }
       const c = conn = peer.connect(PREFIX + code, { reliable: true });
       conn.on("open", () => {
-        c.send({ type: "hello", name: myName, pass });
+        c.send({ type: "hello", name: myName, pass, q: quality.get() });
         if (mode === "stream") conn.send({ type: "want-stream", on: true });
         else if (S && S.kind === "file" && myFileKey === fileKey(S)) conn.send({ type: "want-stream", on: false });
       });
