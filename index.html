@@ -10,6 +10,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect x='6' y='10' width='52' height='34' rx='5' fill='%2334d399'/><rect x='24' y='48' width='16' height='5' rx='2' fill='%2334d399'/></svg>">
 <script src="extension/peerjs.min.js"></script>
 <script src="extension/ice.js"></script>
+<script src="quality.js"></script>
 <style>
   :root {
     --bg: #0e0f12; --panel: #17191e; --line: #2a2d35; --text: #eceef2;
@@ -82,6 +83,8 @@
   .toolbar button { padding: 10px 14px; font-size: 14px; background: transparent; white-space: nowrap; }
   .toolbar button.on { background: var(--line); }
   .toolbar.faded { opacity: 0; pointer-events: none; }
+  @media (max-width: 440px) { .toolbar { gap: 2px; padding: 4px; } .toolbar button { padding: 9px 8px; font-size: 13px; } }
+  @media (max-width: 360px) { .toolbar button { padding: 9px 6px; font-size: 12px; } }
   #tapToPlay { pointer-events: auto; }
 </style>
 </head>
@@ -155,6 +158,7 @@
     <button id="fitBtn" class="on">Fit</button>
     <button id="actualBtn">Actual size</button>
     <button id="soundBtn" class="hidden">Sound off</button>
+    <button id="qualityBtn">Quality</button>
     <button id="fsBtn">Full screen</button>
   </div>
 </section>
@@ -264,27 +268,16 @@
       setStatus();
     }
 
-    function tuneSender(call) {
-      // Favor sharp text over frame rate, and allow a generous bitrate.
-      const pc = call.peerConnection;
-      if (!pc) return;
-      pc.getSenders().forEach(s => {
-        if (!s.track || s.track.kind !== "video") return;
-        const p = s.getParameters();
-        if (!p.encodings || !p.encodings.length) p.encodings = [{}];
-        p.encodings[0].maxBitrate = 6_000_000;
-        p.degradationPreference = "maintain-resolution";
-        s.setParameters(p).catch(() => {});
-      });
-    }
+    // Size and bitrate are the viewer's pick (quality.js); favor sharp text over frame rate.
+    const tuneSender = v => v.call && Quality.apply(v.call.peerConnection, v.quality, 6, p => { p.degradationPreference = "maintain-resolution"; });
 
     function callViewer(id) {
       const v = viewers.get(id);
       if (!v || !v.ok || !stream || !v.conn.open) return;
       if (v.call) v.call.close();
       v.call = peer.call(id, stream);
-      v.call.on("iceStateChanged", st => { if (st === "connected") tuneSender(v.call); });
-      setTimeout(() => v.call && tuneSender(v.call), 1500);
+      v.call.on("iceStateChanged", st => { if (st === "connected") tuneSender(v); });
+      setTimeout(() => tuneSender(v), 1500);
     }
     const broadcast = msg => viewers.forEach(v => v.ok && v.conn.open && v.conn.send(msg));
 
@@ -292,14 +285,15 @@
       peer = new Peer(PREFIX + code, { debug: 1, config: ICE.config });
       peer.on("open", () => { $("startBtn").disabled = false; setStatus(); });
       peer.on("connection", conn => {
-        const v = { conn, call: null, name: "", ok: false, row: null };
+        const v = { conn, call: null, name: "", ok: false, row: null, quality: Quality.clean() };
         let greeted = false;
         // The viewer has to introduce itself first; a connection that never does is closed.
         const noHello = setTimeout(() => { if (!greeted) conn.close(); }, 15000);
         conn.on("data", msg => {
+          if (greeted && msg && msg.type === "quality") { v.quality = Quality.clean(msg.q); tuneSender(v); return; }
           if (greeted || !msg || msg.type !== "hello") return;
           greeted = true; clearTimeout(noHello);
-          v.name = cleanName(msg.name);
+          v.name = cleanName(msg.name); v.quality = Quality.clean(msg.q);
           const old = viewers.get(conn.peer);
           if (old && old !== v) { settle(old); if (old.call) old.call.close(); old.conn.close(); }
           viewers.set(conn.peer, v);
@@ -388,6 +382,8 @@
     const keepAwake = async () => {
       try { if ("wakeLock" in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.onrelease = () => wakeLock = null; } } catch {}
     };
+    // Let the screen sleep again whenever there is no picture (sharing paused, ended, or reconnecting).
+    const clearVideo = () => { video.srcObject = null; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; } };
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && video.srcObject) keepAwake(); });
 
     const tryPlay = () => video.play().then(() => show($("tapOverlay"), false)).catch(() => show($("tapOverlay")));
@@ -413,7 +409,7 @@
             overlay(null); show($("toolbar")); bumpToolbar();
             tryPlay(); keepAwake();
           });
-          call.on("close", () => { if (video.srcObject) { video.srcObject = null; overlay("Paused", "Waiting for Chris to share again…"); } });
+          call.on("close", () => { if (video.srcObject) { clearVideo(); overlay("Paused", "Waiting for Chris to share again…"); } });
         });
         peer.on("disconnected", () => { if (!peer.destroyed) peer.reconnect(); });
         peer.on("error", err => {
@@ -434,23 +430,23 @@
       const old = conn; conn = null;
       if (old) { try { old.close(); } catch {} }
       const c = conn = peer.connect(PREFIX + code, { reliable: true });
-      c.on("open", () => c.send({ type: "hello", name: myName, pass }));
+      c.on("open", () => c.send({ type: "hello", name: myName, pass, q: quality.get() }));
       conn.on("data", msg => {
-        if (msg.type === "pending") { video.srcObject = null; show($("toolbar"), false); overlay("Asking Chris…", "You'll see the screen as soon as Chris lets you in."); }
+        if (msg.type === "pending") { clearVideo(); show($("toolbar"), false); overlay("Asking Chris…", "You'll see the screen as soon as Chris lets you in."); }
         if (msg.type === "welcome") pass = msg.pass;
         if (msg.type === "denied") {
           denied = true; clearTimeout(retryTimer);
           c.removeAllListeners("close"); c.close(); // no automatic retry after a no
-          video.srcObject = null; show($("toolbar"), false);
+          clearVideo(); show($("toolbar"), false);
           overlay("Chris didn't let you in", "Reload this page to ask again.", false);
         }
-        if (msg.type === "waiting") { video.srcObject = null; show($("toolbar"), false); overlay("Connected", "Waiting for Chris to pick a screen…"); }
+        if (msg.type === "waiting") { clearVideo(); show($("toolbar"), false); overlay("Connected", "Waiting for Chris to pick a screen…"); }
         if (msg.type === "live" && !video.srcObject) overlay("Starting video…");
-        if (msg.type === "ended") { video.srcObject = null; show($("toolbar"), false); overlay("Sharing ended", "This page will reconnect automatically if he starts again."); }
+        if (msg.type === "ended") { clearVideo(); show($("toolbar"), false); overlay("Sharing ended", "This page will reconnect automatically if he starts again."); }
       });
       conn.on("close", () => {
         if (conn !== c) return; // stale connection (already replaced): ignore, as offscreen.js does
-        show($("toolbar"), false); video.srcObject = null; overlay("Reconnecting…"); redial();
+        show($("toolbar"), false); clearVideo(); overlay("Reconnecting…"); redial();
       });
     }
     // Ask for a name first; the host sees it next to Allow / Deny.
@@ -477,6 +473,7 @@
     $("fitBtn").onclick = () => { viewer.classList.remove("actual"); $("fitBtn").classList.add("on"); $("actualBtn").classList.remove("on"); };
     $("actualBtn").onclick = () => { viewer.classList.add("actual"); $("actualBtn").classList.add("on"); $("fitBtn").classList.remove("on"); };
     $("soundBtn").onclick = () => { video.muted = !video.muted; $("soundBtn").textContent = video.muted ? "Sound off" : "Sound on"; $("soundBtn").classList.toggle("on", !video.muted); tryPlay(); };
+    const quality = Quality.mount($("qualityBtn"), 6, "ss-quality", q => { if (conn && conn.open) conn.send({ type: "quality", q }); });
     $("fsBtn").onclick = () => {
       if (document.fullscreenElement || document.webkitFullscreenElement) {
         (document.exitFullscreen || document.webkitExitFullscreen).call(document);
