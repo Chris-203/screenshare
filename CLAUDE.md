@@ -12,6 +12,7 @@ Everything is static: no build step, no bundler, and no package.json outside the
 | `sync.html` | Install and usage page for the extension. Static, no script. |
 | `extension/` | Watch Sync, a Manifest V3 extension for Chrome and Edge that syncs play, pause and seek on streaming sites. |
 | `extension/ice.js` | ICE server config for all three tools. Fetches TURN credentials from the Worker, falls back to PeerJS defaults. |
+| `quality.js` | Viewer quality picker (size and bitrate, Auto by default) for the screen share and the watch party's file stream. The viewer sends its pick; the host applies it to that viewer's sender only. |
 | `worker/` | Cloudflare Worker that mints short-lived TURN credentials. Deployed by hand, see `worker/README.md`. |
 | `watch-sync.zip` | Built by CI from `extension/`. Linked from `sync.html`. |
 | `.github/workflows/build-extension.yml` | On pushes to `main` that touch `extension/`: downloads PeerJS into `extension/peerjs.min.js`, zips the extension, commits both back to `main`. |
