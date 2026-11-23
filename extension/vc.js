@@ -27,6 +27,7 @@ const myState = () => ({ cam: !!local.video, mic: !!local.audio });
 const note = (text, btn, onClick) => {
   const el = $("note"); el.textContent = text || "";
   if (btn) { const b = document.createElement("button"); b.textContent = btn; b.onclick = onClick; el.append(" ", b); }
+  fit();
 };
 
 // ------------------------------------------------------------ tiles
@@ -38,7 +39,9 @@ function makeTile(name, mine) {
   const label = document.createElement("div"); label.className = "name";
   const text = document.createElement("span"); const muted = document.createElement("i"); muted.textContent = "🔇"; muted.title = "Mic off";
   label.append(text, muted);
-  tile.append(video, av, label);
+  // Only used as separate bubbles: a corner to resize this bubble by.
+  const rz = document.createElement("div"); rz.className = "rz"; rz.title = "Drag to resize";
+  tile.append(video, av, label, rz);
   const setName = n => { text.textContent = n; letter.textContent = Array.from(n)[0].toUpperCase(); };
   setName(name);
   return { tile, video, setName, setWait: on => {
@@ -71,12 +74,18 @@ function renderPeer(p) {
 let lastH = 0;
 function fit() {
   requestAnimationFrame(() => {
+    if (layout === "bubbles") return placeBubbles();
     // The full height the tiles want, even while the list is capped and scrolling; content.js caps the frame.
     const t = $("tiles"), h = Math.ceil($("wrap").scrollHeight - t.clientHeight + t.scrollHeight);
+    // The tiles are as wide as the frame, so the height follows the width: report the change after a resize too.
     if (h !== lastH && parent !== window) { lastH = h; parent.postMessage({ wsvc: "size", h }, "*"); }
   });
 }
 new ResizeObserver(fit).observe($("wrap"));
+window.addEventListener("resize", fit);
+// Show the camera and mic buttons for a few seconds after opening, so they can be found; after that, on hover.
+document.body.classList.add("hint");
+setTimeout(() => document.body.classList.remove("hint"), 4000);
 
 function play(video) {
   video.play().catch(() => {
@@ -344,10 +353,98 @@ chrome.runtime.onMessage.addListener(m => {
   if (m.d && typeof m.d === "object") onSignal(m.from, m.name, m.d);
 });
 
-// content.js asks us to leave before it removes the frame, so everyone drops our tile right away.
+// ------------------------------------------------------------ layout: one box, or separate bubbles
+// In the box, content.js owns the frame's size and place. As separate bubbles, the frame covers the
+// whole page with a see-through background, and each bubble is moved and resized here. content.js only
+// lets the pointer into the frame while it is over a bubble (from the shapes sent with "shapes"), so
+// the rest of the page stays clickable.
+const BUBBLE_MIN = 70, BUBBLE_MAX = 420, GAP = 10;
+let layout = "box", origin = { x: 18, y: 18, w: 160 }, dragging = false;
+const spots = new WeakMap();                       // tile element -> { x, y, s }
+const toParent = msg => { if (parent !== window) parent.postMessage(Object.assign({ wsvc: "" }, msg), "*"); };
+const clampSpot = sp => {
+  sp.s = Math.max(BUBBLE_MIN, Math.min(sp.s, BUBBLE_MAX, innerWidth, innerHeight));
+  sp.x = Math.max(0, Math.min(sp.x, innerWidth - sp.s)); sp.y = Math.max(0, Math.min(sp.y, innerHeight - sp.s));
+  return sp;
+};
+function placeBubbles() {
+  let prev = null;
+  const shapes = [];
+  for (const el of $("tiles").children) {
+    let sp = spots.get(el);
+    if (!sp) {
+      // A new bubble goes under the one before it, or starts a new column at the bottom of the screen.
+      const s = Math.round(Math.max(BUBBLE_MIN, Math.min(origin.w, 200)));
+      sp = prev ? { x: prev.x, y: prev.y + prev.s + GAP, s } : { x: origin.x, y: origin.y, s };
+      if (prev && sp.y + s > innerHeight) { sp.x = prev.x + prev.s + GAP; sp.y = origin.y; }
+      spots.set(el, sp);
+    }
+    clampSpot(sp);
+    el.style.left = `${sp.x}px`; el.style.top = `${sp.y}px`; el.style.width = el.style.height = `${sp.s}px`;
+    shapes.push({ x: sp.x, y: sp.y, w: sp.s, h: sp.s, round: true });
+    prev = sp;
+  }
+  const n = $("note");
+  if (n.textContent) {
+    const me = spots.get(mine.tile);
+    n.style.left = `${me.x}px`; n.style.top = `${Math.min(me.y + me.s + 6, innerHeight - n.offsetHeight)}px`;
+    const r = n.getBoundingClientRect();
+    shapes.push({ x: r.left, y: r.top, w: r.width, h: r.height, round: false });
+  }
+  toParent({ wsvc: "shapes", shapes });
+}
+function setLayout(mode, o) {
+  layout = mode === "bubbles" ? "bubbles" : "box";
+  if (o) origin = { x: +o.x || 18, y: +o.y || 18, w: +o.w || 160 };
+  document.body.classList.toggle("bubbles", layout === "bubbles");
+  // The camera and mic buttons sit inside your own bubble, or float over the bottom of the box.
+  (layout === "bubbles" ? mine.tile : document.body).append($("bar"));
+  for (const el of $("tiles").children) if (layout === "box") el.removeAttribute("style");
+  $("note").removeAttribute("style");
+  lastH = 0;
+  fit();
+}
+// Drag a bubble to move it, or its corner to resize it. Pointer capture keeps the drag on the bubble.
+document.addEventListener("pointerdown", e => {
+  if (layout !== "bubbles" || e.button !== 0 || e.target.closest("button")) return;
+  const el = e.target.closest(".tile"), sp = el && spots.get(el);
+  if (!sp) return;
+  e.preventDefault();
+  const resize = !!e.target.closest(".rz"), start = { x: e.clientX, y: e.clientY, sp: Object.assign({}, sp) };
+  el.setPointerCapture(e.pointerId); dragging = true; el.classList.add("drag");
+  const move = ev => {
+    const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
+    if (resize) sp.s = start.sp.s + (Math.abs(dx) > Math.abs(dy) ? dx : dy);
+    else { sp.x = start.sp.x + dx; sp.y = start.sp.y + dy; }
+    placeBubbles();
+  };
+  const end = () => { dragging = false; el.classList.remove("drag"); el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", end); el.removeEventListener("pointercancel", end); };
+  el.addEventListener("pointermove", move); el.addEventListener("pointerup", end); el.addEventListener("pointercancel", end);
+});
+// Hover is tracked by hand (the "hov" class) rather than with :hover, which stays stuck on once
+// content.js takes the pointer away from the frame. Off the bubbles, the pointer goes back to the page.
+let hovTile = null, inside = false;
+function hover(el) { if (hovTile === el) return; if (hovTile) hovTile.classList.remove("hov"); hovTile = el; if (el) el.classList.add("hov"); }
+function inFrame(on) { if (inside === on) return; inside = on; document.body.classList.toggle("hov", on); toParent({ wsvc: "hover", on }); }
+const cold = () => { if (layout !== "bubbles" || dragging) return; hover(null); inFrame(false); toParent({ wsvc: "cold" }); };
+document.addEventListener("pointermove", e => {
+  if (dragging) return;
+  inFrame(true); hover(e.target.closest(".tile"));
+  if (!e.target.closest(".tile, #note")) cold();
+});
+const left = () => { if (dragging) return; hover(null); inFrame(false); cold(); };
+document.documentElement.addEventListener("pointerleave", left);
+document.addEventListener("pointerout", e => { if (!e.relatedTarget) left(); });   // leaving the frame altogether
+
+// Your own bubble's – ⧉ × (as bubbles there is no box to put them on); content.js does the rest.
+for (const [id, c] of [["bmin", "min"], ["blay", "layout"], ["bx", "close"]]) $(id).onclick = () => toParent({ wsvc: "cmd", c });
+
+// From content.js: which layout, and "leave" before it removes the frame, so everyone drops our tile right away.
 window.addEventListener("message", e => {
-  if (e.source !== parent || parent === window || !e.data || e.data.wsvc !== "leave") return;
-  leave();
+  if (e.source !== parent || parent === window || !e.data) return;
+  if (e.data.wsvc === "leave") leave();
+  else if (e.data.wsvc === "layout") setLayout(e.data.mode, e.data);
+  else if (e.data.wsvc === "out") { inside = false; hover(null); document.body.classList.remove("hov"); }
 });
 function leave() {
   if (up) sig("*", { t: "bye" });
@@ -357,7 +454,9 @@ function leave() {
 window.addEventListener("pagehide", () => { if (up) sig("*", { t: "bye" }); });
 
 (async () => {
+  mine.tile.append($("ctl"));
   renderMine();
+  toParent({ wsvc: "ready" });
   await hello();
   let saved = null;
   try { saved = (await chrome.storage.session.get("vc")).vc; } catch {}

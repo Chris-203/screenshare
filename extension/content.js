@@ -117,17 +117,28 @@
         background: rgba(18,19,23,.86); border: 1px solid #2a2d35; backdrop-filter: blur(10px); transition: opacity .4s; }
       .vcbtn.dim { opacity: 0; }
       .vcbtn:focus-visible { outline: 2px solid #a78bfa; }
-      .vc { position: fixed; left: 18px; top: 18px; display: flex; flex-direction: column; border-radius: 14px; overflow: hidden;
+      .vcbtn.live::after { content: ""; position: absolute; top: 3px; right: 3px; width: 9px; height: 9px; border-radius: 50%; background: #34d399; }
+      .vc { position: fixed; left: 18px; top: 18px; border-radius: 14px; overflow: hidden;
         background: #0e0f12; border: 1px solid #2a2d35; box-shadow: 0 6px 24px rgba(0,0,0,.45); }
-      .vchead { display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 10px; cursor: grab; touch-action: none; user-select: none;
-        font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #9095a1; border-bottom: 1px solid #2a2d35; }
-      .vchead.drag { cursor: grabbing; }
-      .vchead span { flex: 1; }
-      .vchead button { all: unset; cursor: pointer; padding: 3px 7px; border-radius: 6px; font-size: 15px; line-height: 1; color: #9095a1; }
-      .vchead button:hover { color: #eceef2; background: #2a2d35; }
-      .vc iframe { display: block; border: 0; width: 168px; height: 170px; background: #0e0f12; color-scheme: dark; }
-      .vc.min iframe { height: 0; }
-      .vc.min .vchead { border-bottom: 0; }
+      .vc.min { visibility: hidden; pointer-events: none; }
+      /* The drag strip, minimize and close sit over the top of the videos and only show on hover. */
+      .vctop { position: absolute; z-index: 1; left: 0; top: 0; right: 0; height: 26px; display: flex; justify-content: flex-end; align-items: center; gap: 3px;
+        padding: 0 6px; cursor: grab; touch-action: none; user-select: none; opacity: 0; transition: opacity .2s; background: linear-gradient(rgba(0,0,0,.6), transparent); }
+      .vctop button { all: unset; cursor: pointer; width: 20px; height: 18px; border-radius: 6px; text-align: center;
+        font: 600 14px/18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #eceef2; background: rgba(0,0,0,.6); }
+      .vctop button:hover { background: #2a2d35; }
+      .vctop button:focus-visible { outline: 2px solid #a78bfa; }
+      .grip { position: absolute; z-index: 1; right: 0; bottom: 0; width: 20px; height: 20px; cursor: nwse-resize; touch-action: none; opacity: 0; transition: opacity .2s; }
+      .grip::after { content: ""; position: absolute; right: 4px; bottom: 4px; width: 9px; height: 9px; border-right: 2px solid #eceef2; border-bottom: 2px solid #eceef2; border-radius: 0 0 3px 0; }
+      .vc:hover .vctop, .vc:hover .grip, .vc.hov .vctop, .vc.hov .grip, .vc.drag .vctop, .vc.drag .grip, .vctop:focus-within { opacity: 1; }
+      .vc.drag { cursor: grabbing; }
+      .vc.drag iframe { pointer-events: none; }
+      .vc iframe { display: block; border: 0; width: 180px; height: 150px; background: #0e0f12; color-scheme: dark; }
+      /* Separate bubbles: the frame covers the page, see-through, and only takes the pointer over a bubble (.hot). */
+      .vc.bubbles { left: 0 !important; top: 0 !important; width: 100vw; height: 100vh; border: 0; border-radius: 0; background: transparent; box-shadow: none; pointer-events: none; }
+      .vc.bubbles .vctop, .vc.bubbles .grip { display: none; }
+      .vc.bubbles iframe { width: 100% !important; height: 100% !important; background: transparent; pointer-events: none; }
+      .vc.bubbles.hot iframe { pointer-events: auto; }
       @keyframes rise { from { transform: translateY(0) scale(.6); opacity: 0; } 15% { transform: translateY(-6vh) scale(1.1); opacity: 1; } to { transform: translateY(-55vh) scale(1); opacity: 0; } }
     </style>
     <div class="pill dim" id="pill"><span class="dot" id="dot"></span><span id="ptxt"></span></div>
@@ -136,7 +147,8 @@
     <div class="floats" id="floats"></div>
     <button class="vcbtn dim" id="vbtn" title="Video chat" aria-label="Video chat">🎥</button>
     <div class="vc" id="vc" hidden>
-      <div class="vchead" id="vchead"><span>Video chat</span><button id="vcmin" title="Hide videos" aria-label="Hide videos">–</button><button id="vcx" title="Leave video chat" aria-label="Leave video chat">×</button></div>
+      <div class="vctop" id="vctop" title="Drag to move"><button id="vclay" title="Separate bubbles" aria-label="Separate bubbles">⧉</button><button id="vcmin" title="Hide videos (you stay in the call)" aria-label="Hide videos">–</button><button id="vcx" title="Leave video chat" aria-label="Leave video chat">×</button></div>
+      <div class="grip" id="vcgrip" title="Drag to resize"></div>
     </div>
     <button class="chatbtn dim" id="cbtn" title="Chat" aria-label="Chat">💬<span class="badge" id="badge" hidden></span></button>
     <div class="panel" id="panel">
@@ -323,19 +335,47 @@
   // The tiles, camera and mic live in vc.html, an extension page shown in a frame here. The frame has
   // the extension's own origin, so the site's scripts can't read the video, and Chrome asks for the
   // camera and mic for Watch Sync rather than for the streaming site. It only exists while it is open.
-  let vcFrame = null, vcPos = null;
+  // – hides the videos but keeps you in the call (audio keeps playing, others still see you); the 🎥 button,
+  // with a green dot while you're in, brings them back. × leaves video chat.
+  const VC_MIN_W = 120, VC_MAX_W = 520;
+  // ⧉ switches between one box and separate bubbles; the choice and the box's width are remembered.
+  let vcFrame = null, vcPos = null, vcW = 180, vcLayout = "box", vcShapes = [];
+  try { chrome.storage.local.get(["vcWidth", "vcLayout"]).then(r => { if (r && r.vcWidth > 0) vcW = r.vcWidth; if (r && r.vcLayout === "bubbles") vcLayout = "bubbles"; }).catch(() => {}); } catch {}
+  const vcButton = () => {
+    const live = !!vcFrame;
+    $("vbtn").classList.toggle("live", live);
+    $("vbtn").hidden = live && !$("vc").classList.contains("min");
+    $("vbtn").title = live ? "Show video chat" : "Video chat";
+  };
   function openVc() {
     const box = $("vc");
-    if (vcFrame) { box.classList.remove("min"); return; }
-    vcFrame = document.createElement("iframe");
-    // "*" because a frame's own origin isn't matched reliably for extension pages with a dynamic URL;
-    // the frame can only ever hold vc.html.
-    vcFrame.allow = "camera *; microphone *; autoplay *";
-    vcFrame.title = "Video chat";
-    vcFrame.src = chrome.runtime.getURL("vc.html");
-    box.append(vcFrame);
-    box.classList.remove("min"); box.hidden = false; $("vbtn").hidden = true;
-    if (vcPos) placeVc(vcPos.x, vcPos.y);
+    box.classList.remove("min");
+    if (!vcFrame) {
+      vcFrame = document.createElement("iframe");
+      // "*" because a frame's own origin isn't matched reliably for extension pages with a dynamic URL;
+      // the frame can only ever hold vc.html.
+      vcFrame.allow = "camera *; microphone *; autoplay *";
+      vcFrame.title = "Video chat";
+      vcFrame.src = chrome.runtime.getURL("vc.html");
+      box.append(vcFrame);
+      box.hidden = false;
+    }
+    showLayout();
+    vcButton();
+  }
+  function showLayout() {
+    const box = $("vc"), bubbles = vcLayout === "bubbles";
+    // Bubbles start where the box was.
+    const r = box.classList.contains("bubbles") ? null : box.getBoundingClientRect();
+    const at = vcPos || (r && r.width ? { x: r.left, y: r.top } : { x: 18, y: 18 });
+    box.classList.toggle("bubbles", bubbles); box.classList.remove("hot"); vcShapes = [];
+    if (!bubbles) { sizeVc(vcW); placeVc(at.x, at.y); }
+    if (vcFrame) try { vcFrame.contentWindow.postMessage({ wsvc: "layout", mode: vcLayout, x: at.x, y: at.y, w: vcW }, "*"); } catch {}
+  }
+  function switchLayout() {
+    vcLayout = vcLayout === "bubbles" ? "box" : "bubbles";
+    try { chrome.storage.local.set({ vcLayout }).catch(() => {}); } catch {}
+    showLayout();
   }
   function closeVc() {
     if (!vcFrame) return;
@@ -343,7 +383,12 @@
     // Let it say goodbye first, so everyone drops this tile right away.
     try { f.contentWindow.postMessage({ wsvc: "leave" }, "*"); } catch {}
     setTimeout(() => f.remove(), 300);
-    $("vc").hidden = true; $("vbtn").hidden = false;
+    $("vc").hidden = true; $("vc").classList.remove("min", "hot", "hov");
+    vcButton();
+  }
+  function minVc() {
+    $("vc").classList.add("min"); $("vc").classList.remove("hot", "hov"); vcButton(); showBtn();
+    try { vcFrame.contentWindow.postMessage({ wsvc: "out" }, "*"); } catch {}   // nothing stays highlighted for when it comes back
   }
   function placeVc(x, y) {
     const box = $("vc"), r = box.getBoundingClientRect();
@@ -351,24 +396,63 @@
     vcPos = { x, y };
     box.style.left = `${x}px`; box.style.top = `${y}px`;
   }
+  // Width only: the tiles keep a 4:3 shape, and the frame reports the height that gives them.
+  function sizeVc(w) {
+    vcW = Math.round(Math.max(VC_MIN_W, Math.min(w, VC_MAX_W, innerWidth - 20)));
+    if (vcFrame) vcFrame.style.width = `${vcW}px`;
+  }
   $("vbtn").onclick = openVc;
   $("vcx").onclick = closeVc;
-  $("vcmin").onclick = () => { const min = $("vc").classList.toggle("min"); $("vcmin").textContent = min ? "+" : "–"; $("vcmin").title = min ? "Show videos" : "Hide videos"; };
-  // Drag by the bar. Pointer capture keeps the drag going when the pointer passes over the frame.
-  $("vchead").addEventListener("pointerdown", e => {
-    if (e.button !== 0 || e.target.closest("button")) return;
-    const head = $("vchead"), r = $("vc").getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
-    head.setPointerCapture(e.pointerId); head.classList.add("drag");
-    const move = ev => placeVc(ev.clientX - dx, ev.clientY - dy);
-    const end = () => { head.classList.remove("drag"); head.removeEventListener("pointermove", move); head.removeEventListener("pointerup", end); head.removeEventListener("pointercancel", end); };
-    head.addEventListener("pointermove", move); head.addEventListener("pointerup", end); head.addEventListener("pointercancel", end);
-  });
-  window.addEventListener("resize", () => { if (vcPos) placeVc(vcPos.x, vcPos.y); });
-  // The frame says how tall its tiles are. Only the frame itself is listened to, and only a number is taken.
+  $("vcmin").onclick = minVc;
+  $("vclay").onclick = switchLayout;
+  // Pointer capture keeps a drag going when the pointer passes over the frame.
+  function dragWith(el, onMove, onEnd) {
+    el.addEventListener("pointerdown", e => {
+      if (e.button !== 0 || e.target.closest("button")) return;
+      e.preventDefault();
+      const box = $("vc"), r = box.getBoundingClientRect(), start = { x: e.clientX, y: e.clientY, r, w: vcW };
+      el.setPointerCapture(e.pointerId); box.classList.add("drag");
+      const move = ev => onMove(ev, start);
+      const end = () => { box.classList.remove("drag"); el.removeEventListener("pointermove", move); el.removeEventListener("pointerup", end); el.removeEventListener("pointercancel", end); if (onEnd) onEnd(); };
+      el.addEventListener("pointermove", move); el.addEventListener("pointerup", end); el.addEventListener("pointercancel", end);
+    });
+  }
+  dragWith($("vctop"), (ev, s) => placeVc(s.r.left + ev.clientX - s.x, s.r.top + ev.clientY - s.y));
+  dragWith($("vcgrip"), (ev, s) => {
+    const dx = ev.clientX - s.x, dy = (ev.clientY - s.y) * 4 / 3;   // a diagonal drag, whichever way moved more
+    sizeVc(s.w + (Math.abs(dx) > Math.abs(dy) ? dx : dy));
+  }, () => { try { chrome.storage.local.set({ vcWidth: vcW }).catch(() => {}); } catch {} });
+  window.addEventListener("resize", () => { if (vcLayout !== "box") return; if (vcFrame) sizeVc(vcW); if (vcPos) placeVc(vcPos.x, vcPos.y); });
+  // As bubbles, the pointer goes to the frame only while it is over a bubble or its note.
+  const overShape = (x, y) => vcShapes.some(s => s.round
+    ? (x - s.x - s.w / 2) ** 2 + (y - s.y - s.h / 2) ** 2 <= (s.w / 2) ** 2
+    : x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h);
+  // In the box, the frame can't always tell that the pointer left it, so a move seen out here says so.
+  window.addEventListener("pointermove", e => {
+    if (!vcFrame) return;
+    const box = $("vc");
+    if (vcLayout === "bubbles") { if (overShape(e.clientX, e.clientY)) box.classList.add("hot"); return; }
+    if (!box.classList.contains("hov")) return;
+    const r = box.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+      box.classList.remove("hov");
+      try { vcFrame.contentWindow.postMessage({ wsvc: "out" }, "*"); } catch {}
+    }
+  }, { capture: true, passive: true });
+  // Messages from the frame. Only the frame itself is listened to, and only known fields are read.
+  const num = (v, max) => { v = Number(v); return isFinite(v) ? Math.max(-max, Math.min(v, max)) : 0; };
   window.addEventListener("message", e => {
-    if (!vcFrame || e.source !== vcFrame.contentWindow || !e.data || e.data.wsvc !== "size") return;
-    const h = Number(e.data.h);
-    if (isFinite(h)) vcFrame.style.height = `${Math.max(60, Math.min(Math.round(h), innerHeight - 60))}px`;
+    if (!vcFrame || e.source !== vcFrame.contentWindow || !e.data || typeof e.data.wsvc !== "string") return;
+    const m = e.data;
+    if (m.wsvc === "size" && vcLayout === "box") {
+      const h = Number(m.h);
+      if (isFinite(h)) vcFrame.style.height = `${Math.max(60, Math.min(Math.round(h), innerHeight - 60))}px`;
+    }
+    else if (m.wsvc === "ready") showLayout();
+    else if (m.wsvc === "shapes" && Array.isArray(m.shapes)) vcShapes = m.shapes.slice(0, 12).map(s => ({ x: num(s.x, 1e5), y: num(s.y, 1e5), w: num(s.w, 1e5), h: num(s.h, 1e5), round: !!s.round }));
+    else if (m.wsvc === "cold") $("vc").classList.remove("hot");
+    else if (m.wsvc === "hover") $("vc").classList.toggle("hov", !!m.on);   // the pointer is over the frame (box layout)
+    else if (m.wsvc === "cmd") { if (m.c === "min") minVc(); else if (m.c === "close") closeVc(); else if (m.c === "layout") switchLayout(); }
   });
 
   function renderStatus() {
