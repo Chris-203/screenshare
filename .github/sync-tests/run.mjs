@@ -611,6 +611,20 @@ async function videoChat(host, guest) {
     });
     await a.click("#cam"); await a.click("#mic");
     await check("Host turns camera and mic on, guest sees it", async () => { const r = await remote(b); return r && r.picture && r.mic && !r.connecting; });
+    // The guest must actually receive the host's mic: audio packets arrive and the tile's element is playing it.
+    const hears = p => p.evaluate(async () => {
+      const x = [...peers.values()][0]; if (!x || !x.pc) return null;
+      let bytes = 0; (await x.pc.getStats()).forEach(r => { if (r.type === "inbound-rtp" && r.kind === "audio") bytes = r.bytesReceived; });
+      // Whatever element plays the sound must really be running (readyState 2+), not just "not paused".
+      const el = [...x.tile.tile.querySelectorAll("audio, video")].find(m => !m.muted && m.srcObject && m.srcObject.getAudioTracks().length);
+      const at = el && el.srcObject.getAudioTracks()[0];
+      return { bytes, playing: !!el && !el.paused && el.readyState >= 2 && el.volume > 0, track: !!at && at.readyState === "live" && !at.muted };
+    });
+    await check("Guest hears the host's mic", async () => { const h = await hears(b); return h && h.bytes > 2000 && h.playing && h.track; });
+    await b.click("#mic");
+    // The guest's camera is still off: their voice must play without a picture.
+    await check("Host hears the guest's mic, guest's camera off", async () => { const h = await hears(a); return h && h.bytes > 2000 && h.playing && h.track; });
+    await b.click("#mic");
     await b.click("#cam");
     await check("Guest turns camera on, host sees it", async () => { const r = await remote(a); return r && r.picture && !r.mic; });
     await a.click("#cam");
