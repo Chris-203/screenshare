@@ -536,7 +536,8 @@
       if (role === "host" && snapIn()) setTimeout(() => sendTick(true), 150);
       return;
     }
-    if (myAd || following || (held && m.type === "play")) return;
+    // Whoever everyone is waiting for (their ad, or their video loading) is never paused or moved by the others.
+    if (myAd || myBuf || following || (held && m.type === "play")) return;
     bind();
     if (!video) return toast(`${partner} is playing something, open the same title to sync`);
     const elapsed = Math.max(0, (Date.now() - m.at) / 1000);
@@ -562,6 +563,9 @@
     if (role !== "guest") return;
     if (m.fromHost === true) { lastHost = { t: m.t, paused: !!m.paused, at: m.at }; setHostOnly(m.hostOnly === true); }
     if (!video || myAd || myBuf || held || following || adsBy.size || bufBy.size) return;
+    // Everyone just waited for this person and the host picks up from their spot, so they aren't moved right
+    // after: on a slow connection, or in an ad, being moved starts the loading over and everyone waits again.
+    if (Date.now() - bufEnded < 4000) { pausedMismatch = 0; return; }
     const elapsed = Math.max(0, (Date.now() - m.at) / 1000);
     const target = m.paused ? m.t : m.t + elapsed;
     if (m.force || m.paused !== video.paused) {
@@ -677,6 +681,7 @@
     if (m.type === "syncreq") { if (role === "host" && syncIn()) { sendNav(); sendAd(); setTimeout(() => sendTick(true), 300); } return; }
     if (m.type === "ad") return onAd(m);
     if (m.type === "buffer") return onBuffer(m);
+    if (m.type === "nowait") return onNoWait(m);
     if (m.type === "control") { if (role === "guest" && m.fromHost === true) setHostOnly(m.hostOnly === true); return; }
     if (m.type === "play" || m.type === "pause" || m.type === "seek") applyRemote(m);
     else if (m.type === "tick") onTick(m);
@@ -768,19 +773,43 @@
     walk(start);
     return found;
   }
+  // Some players show the ad in a second video while the show's own video sits "playing" but frozen.
+  // Without this that looks like loading, and the person in the ad was treated as buffering.
+  const seenAt = new WeakMap();
+  let mainT = -1;
+  function adInOtherVideo() {
+    const t = video.currentTime, frozen = !video.paused && !video.ended && Math.abs(t - mainT) < 0.01;
+    mainT = t;
+    let other = false;
+    for (const v of document.querySelectorAll("video")) {
+      if (v === video) continue;
+      const last = seenAt.get(v); seenAt.set(v, v.currentTime);
+      if (!v.paused && !v.ended && last !== undefined && Math.abs(v.currentTime - last) > 0.05 && visible(v)) other = true;
+    }
+    return frozen && other;
+  }
   function adOnPage() {
     if (!video) return false;   // an ad needs a player; this keeps menus and account pages out of it
     try {
+      if (adInOtherVideo()) return true;
       for (const el of document.querySelectorAll(AD_SELECTORS)) if (visible(el)) return true;
       return !!video && adText(playerRoot(video));
     } catch { return false; }
   }
 
   const sendAd = () => { if (myAd) { adSent = Date.now(); send({ type: "ad", on: true, at: adSent }); } };
+  // "Watch anyway" counts for everyone, so the people not in the ad or loading carry on together.
   function watchAnyway() {
-    waitingOn().forEach(n => adIgnored.add(n));
+    const names = waitingOn();
+    names.forEach(n => adIgnored.add(n));
+    send({ type: "nowait", names });
     updateHold();
     if (video && video.paused) doPlay();
+  }
+  function onNoWait(m) {
+    if (!adIn() || !Array.isArray(m.names)) return;
+    m.names.slice(0, 8).forEach(n => { if (typeof n === "string" && (adsBy.has(n) || bufBy.has(n))) adIgnored.add(n); });
+    updateHold();
   }
   const askToWait = () => toast(holdText(waitingOn()), "Watch anyway", watchAnyway, 8000);
 
@@ -812,9 +841,11 @@
   // "Stuck" means playing (not paused) while the time hasn't moved for BUF_AFTER. That works on every
   // player, including ones that never fire a "waiting" event, and a quick seek that loads fast doesn't count.
   const BUF_AFTER = 1000;
-  let myBuf = false, bufSent = 0, lastT = -1, stallSince = 0, moving = 0;
+  // The end of someone's loading carries where their video is, so the host can pick up from there
+  // instead of sending them forward to its own spot, which would make them load all over again.
+  let myBuf = false, bufSent = 0, lastT = -1, stallSince = 0, moving = 0, caughtUp = null, bufEnded = 0;
   const sendBuf = () => { if (myBuf) { bufSent = Date.now(); send({ type: "buffer", on: true, at: bufSent }); } };
-  function endBuf(now) { if (!myBuf) return; myBuf = false; send({ type: "buffer", on: false, at: now }); }
+  function endBuf(now) { if (!myBuf) return; myBuf = false; bufEnded = now; send({ type: "buffer", on: false, at: now, t: video ? video.currentTime : null }); }
   function checkBuffer(now) {
     const t = video ? video.currentTime : -1;
     const playing = !!video && !video.paused && !video.ended && !myAd && !held;
@@ -829,7 +860,10 @@
     if (!adIn()) return;
     const who = nameOf(m);
     if (m.on === true) bufBy.set(who, Date.now());
-    else { bufBy.delete(who); if (!adsBy.has(who)) adIgnored.delete(who); }
+    else {
+      if (bufBy.has(who) && Number.isFinite(m.t) && Number.isFinite(m.at) && m.t >= 0) caughtUp = { t: m.t, at: m.at };
+      bufBy.delete(who); if (!adsBy.has(who)) adIgnored.delete(who);
+    }
     updateHold();
   }
 
@@ -837,7 +871,7 @@
     const waits = waitingOn(), busy = myAd || myBuf || waits.length > 0, was = held;
     held = !myAd && !myBuf && waits.length > 0;
     // The host remembers whether the show was playing when the break began, to pick up again after it.
-    if (busy && !wasBusy && role === "host") resumeAfterHold = myAd || myBuf || Date.now() - lastPlaying < 3000;
+    if (busy && !wasBusy && role === "host") { resumeAfterHold = myAd || myBuf || Date.now() - lastPlaying < 3000; caughtUp = null; }
     if (held) {
       bind();
       if (video && !video.paused) { suppress(1500); doPause(); }
@@ -846,7 +880,15 @@
     if (!busy && wasBusy && role === "host") {
       // Everyone's ad is over: play again if we were playing, then put everyone on the host's spot.
       setTimeout(() => {
+        const c = caughtUp; caughtUp = null;
         if (!active || myAd || myBuf || held) return;
+        // We waited for someone's video to load: carry on from where theirs is now. The host kept playing a
+        // moment after they got stuck, so its own spot is ahead, and sending them there makes them load again,
+        // which pauses everyone again, over and over.
+        if (resumeAfterHold && video && c && Date.now() - c.at < 5000) {
+          const target = c.t + Math.max(0, (Date.now() - c.at) / 1000);
+          if (Math.abs(video.currentTime - target) > 0.15) { suppress(1500); doSeek(target); }
+        }
         if (resumeAfterHold && video && video.paused) { suppress(1500); doPlay(); }
         setTimeout(() => sendTick(true, true), 400);
       }, 500);
@@ -883,7 +925,7 @@
     off.splice(0).forEach(f => f()); video = null;
     hostOnly = false; lastHost = null;
     myAd = false; held = false; wasBusy = false; adMisses = 0; adsBy.clear(); adIgnored.clear(); adKey = "";
-    myBuf = false; bufBy.clear(); lastT = -1; stallSince = 0; moving = 0;
+    myBuf = false; bufBy.clear(); lastT = -1; stallSince = 0; moving = 0; caughtUp = null; bufEnded = 0;
     closeVc();
     hostEl.remove();
     document.removeEventListener("mousemove", showBtn);
