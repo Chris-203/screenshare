@@ -7,12 +7,14 @@
 //   node run.mjs                 both suites
 //   node run.mjs party           only the watch party page (party.html)
 //   node run.mjs extension       only the Watch Sync extension
+//   node run.mjs screen          only the screen share page's sound (index.html)
 //   node run.mjs party --fault   drops sync messages on purpose; must exit 1
 //
 // What is real: party.html and every extension script, unmodified, in real browsers
 // playing a real video. What is replaced: PeerJS, by fake-peer.js, which carries the same
 // messages through a small hub in this file with added latency and jitter. So this checks
-// the sync logic, not WebRTC or the public PeerJS broker.
+// the sync logic, not WebRTC or the public PeerJS broker. The screen suite is the exception:
+// its media call is a real RTCPeerConnection, with only the offer and answer going through the hub.
 //
 // Exit codes: 0 in sync, 1 drift over a limit, 2 the test itself broke.
 
@@ -81,6 +83,11 @@ function startHub() {
         later(target, { op: "incoming", cid: m.cid, from: ws.peerId });
         later(target, { op: "connopen", cid: m.cid });
         later(ws, { op: "connopen", cid: m.cid });
+      } else if (m.op === "call") {
+        const target = peers.get(m.to);
+        if (!target) return later(ws, { op: "error", type: "peer-unavailable" });
+        conns.set(m.cid, { a: ws, b: target });
+        later(target, { op: "incomingcall", cid: m.cid, from: ws.peerId, sdp: m.sdp });
       } else if (m.op === "data" || m.op === "close") {
         const c = conns.get(m.cid); if (!c) return;
         const other = c.a === ws ? c.b : c.a;
@@ -650,6 +657,135 @@ async function videoChat(host, guest) {
   await a.close().catch(() => {}); await b.close().catch(() => {});
 }
 
+// ---------------------------------------------------------------- suite: index.html (screen share sound)
+// The host's getDisplayMedia is replaced by a moving canvas plus, when sound is asked for, a
+// 440 Hz tone, the way Chrome hands back a tab with "Also share tab audio" on. window.__pickNoSound
+// makes it behave like a picked window, which Chrome shares without sound. The media is a real
+// RTCPeerConnection between the two browsers. The viewer's browser keeps Chromium's normal
+// autoplay rule (sound needs a click on the page first), which the other suites turn off.
+async function screenSuite(web) {
+  console.log("\nScreen share page (index.html): the host's sound reaches the viewer");
+  const base = `http://127.0.0.1:${web.port}`;
+  const VIEWER_ARGS = LAUNCH_ARGS.filter(a => !a.startsWith("--autoplay-policy")).concat("--disable-features=WebRtcHideLocalIpsWithMdns");
+  const browsers = await Promise.all([chromium.launch({ args: [...LAUNCH_ARGS, ...MEDIA_ARGS] }), chromium.launch({ args: VIEWER_ARGS }), chromium.launch({ args: VIEWER_ARGS })]);
+  const ok = (step, pass, note = "") => check("screen", step, !!pass, note);
+  try {
+    const hostCtx = await browsers[0].newContext();
+    await hostCtx.addInitScript(() => {
+      navigator.mediaDevices.getDisplayMedia = async (c = {}) => {
+        const canvas = Object.assign(document.createElement("canvas"), { width: 640, height: 360 });
+        const g = canvas.getContext("2d"); let n = 0;
+        setInterval(() => { g.fillStyle = `hsl(${n++ % 360} 60% 50%)`; g.fillRect(0, 0, 640, 360); }, 33);
+        const out = canvas.captureStream(30);
+        if (c.audio && !window.__pickNoSound) {
+          const ac = new AudioContext(), osc = ac.createOscillator(), dest = ac.createMediaStreamDestination();
+          osc.frequency.value = 440; osc.connect(dest); osc.start();
+          out.addTrack(dest.stream.getAudioTracks()[0]);
+        }
+        window.__lastPick = c;
+        return out;
+      };
+    });
+    const host = await hostCtx.newPage(); watchErrors(host, "host");
+    // Keep every RTCPeerConnection the page makes, to read what actually arrives.
+    // strict: play() with sound is refused unless it runs inside a tap, the way Safari on a Mac,
+    // iPhone or iPad behaves (Chromium lets sound play any time after the first click).
+    const viewerPage = async (browser, who, strict) => {
+      const ctx = await browser.newContext();
+      if (strict) await ctx.addInitScript(() => {
+        const real = HTMLMediaElement.prototype.play; let inTap = false;
+        for (const t of ["pointerdown", "pointerup", "click"]) addEventListener(t, () => { inTap = true; setTimeout(() => inTap = false); }, true);
+        HTMLMediaElement.prototype.play = function () {
+          if (!this.muted && !inTap) return Promise.reject(new DOMException("needs a tap", "NotAllowedError"));
+          return real.call(this);
+        };
+      });
+      await ctx.addInitScript(() => {
+        const Real = window.RTCPeerConnection; window.__pcs = [];
+        window.RTCPeerConnection = function (...a) { const pc = new Real(...a); window.__pcs.push(pc); return pc; };
+        window.RTCPeerConnection.prototype = Real.prototype;
+      });
+      const p = await ctx.newPage(); watchErrors(p, who); return p;
+    };
+    const viewer = await viewerPage(browsers[1], "viewer");
+    const join = async (page, name) => {
+      await page.goto(`${base}/index.html?w=${code}`);
+      await page.fill("#nameInput", name);
+      await page.click("#nameForm button");   // the one click the viewer makes before the picture arrives
+      await until("the host's Allow button", () => host.$("#requests .req button.primary"));
+      await host.click("#requests .req button.primary");
+    };
+
+    await host.goto(`${base}/index.html?host`);
+    const code = await until("the share code", async () => { const t = await host.textContent("#bigCode"); return /^[A-Z0-9]{6}$/.test(t) && t; });
+    await until("the host to be ready", () => host.$eval("#startBtn", b => !b.disabled));
+    ok("Host page shares computer sound by default", await host.$eval("#withAudio", b => b.checked));
+    await host.$eval("#withAudio", b => { b.checked = true; });
+    await host.click("#startBtn");
+    await until("the host to go live", () => host.$eval("#liveRow", r => !r.classList.contains("hidden")));
+    ok("Host asks Chrome for sound without voice processing", await host.evaluate(() => { const a = window.__lastPick.audio; return a && a.echoCancellation === false && a.noiseSuppression === false && a.autoGainControl === false; }));
+
+    await join(viewer, "Tester");
+
+    // What the viewer gets: picture, and sound that is playing, unmuted, with signal in it.
+    const heard = (page = viewer) => page.evaluate(async () => {
+      const v = document.getElementById("remote");
+      const s = v.srcObject, a = s && s.getAudioTracks()[0];
+      let energy = 0;
+      for (const pc of window.__pcs) {
+        if (pc.connectionState === "closed") continue;
+        (await pc.getStats()).forEach(r => { if (r.type === "inbound-rtp" && r.kind === "audio") energy = Math.max(energy, r.totalAudioEnergy || 0); });
+      }
+      return { picture: v.videoWidth > 0 && !v.paused, track: !!a && a.readyState === "live", muted: v.muted, paused: v.paused, energy, vol: v.volume };
+    });
+    const hears = async (step, page = viewer, timeout = 15000) => {
+      let last = null, t0 = Date.now();
+      const e0 = (await heard(page)).energy;
+      try {
+        await until(step, async () => { last = await heard(page); return last.picture && last.track && !last.muted && !last.paused && last.vol > 0 && last.energy > e0; }, timeout);
+        ok(step, true, `${Date.now() - t0} ms`);
+      } catch { ok(step, false, JSON.stringify(last)); }
+    };
+    await hears("Viewer hears the host's sound without pressing anything else");
+
+    await host.click("#switchBtn");
+    await sleep(1000);
+    await hears("Host switches what's shared, viewer still hears it");
+
+    // A browser that refuses sound until a tap: picture plays muted, the viewer gets "Tap for sound".
+    const strict = await viewerPage(browsers[2], "Safari-like viewer", true);
+    await join(strict, "Strict");
+    ok("Strict browser: picture plays muted, Tap for sound shows", await until("the Tap for sound button", async () => {
+      const [r, btn] = [await heard(strict), await strict.$eval("#unmuteBtn", b => !b.classList.contains("hidden"))];
+      return r.picture && r.muted && btn;
+    }).catch(() => false));
+    await strict.click("#unmuteBtn");
+    await hears("Strict browser: one tap and the viewer hears it", strict);
+    ok("Strict browser: Tap for sound goes away", await strict.$eval("#unmuteBtn", b => b.classList.contains("hidden")));
+    await strict.click("#soundBtn", { force: true });
+    ok("Sound button mutes, page keeps saying sound is off", await strict.evaluate(() => {
+      const $ = id => document.getElementById(id);
+      return $("remote").muted && $("soundBtn").textContent.includes("Sound off") && !$("unmuteBtn").classList.contains("hidden") && $("unmuteBtn").textContent.includes("Sound off");
+    }));
+    await strict.click("#unmuteBtn");
+    await hears("Tapping that turns sound back on", strict);
+
+    // A share that came back without sound (a picked window): the host is told.
+    await host.click("#stopBtn");
+    await host.evaluate(() => { window.__pickNoSound = true; });
+    await host.click("#startBtn");
+    await until("the host to go live again", () => host.$eval("#liveRow", r => !r.classList.contains("hidden")));
+    ok("Host is warned when the share has no sound", await until("the no-sound warning", () => host.$eval("#noSound", n => !n.classList.contains("hidden")), 5000).catch(() => false));
+    await host.click("#stopBtn");
+    await host.evaluate(() => { window.__pickNoSound = false; });
+    await host.click("#startBtn");
+    await hears("Host shares again with sound, viewer hears it");
+    ok("Warning goes away once there is sound", await host.$eval("#noSound", n => n.classList.contains("hidden")));
+  } finally {
+    await Promise.all(browsers.map(b => b.close()));
+  }
+}
+
 // ---------------------------------------------------------------- run
 function summary() {
   const failed = results.filter(r => !r.ok);
@@ -667,6 +803,7 @@ const hub = await startHub();
 const web = await startServer(hub.port);
 try {
   if (want("party")) await partySuite(hub, web);
+  if (want("screen")) await screenSuite(web);
   if (want("extension")) { hub.dropSync = false; await extensionSuite(hub, web); }
   const failed = summary();
   if (failed.length) { exit = 1; console.log(`\n${failed.length} of ${results.length} checks out of sync.`); }
