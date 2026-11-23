@@ -130,7 +130,7 @@
       .vctop button:focus-visible { outline: 2px solid #a78bfa; }
       .grip { position: absolute; z-index: 1; right: 0; bottom: 0; width: 20px; height: 20px; cursor: nwse-resize; touch-action: none; opacity: 0; transition: opacity .2s; }
       .grip::after { content: ""; position: absolute; right: 4px; bottom: 4px; width: 9px; height: 9px; border-right: 2px solid #eceef2; border-bottom: 2px solid #eceef2; border-radius: 0 0 3px 0; }
-      .vc:hover .vctop, .vc:hover .grip, .vc.hov .vctop, .vc.hov .grip, .vc.drag .vctop, .vc.drag .grip, .vctop:focus-within { opacity: 1; }
+      .vc:hover .vctop, .vc:hover .grip, .vc.hov .vctop, .vc.hov .grip, .vc.drag .vctop, .vc.drag .grip, .vctop:has(:focus-visible) { opacity: 1; }
       .vc.drag { cursor: grabbing; }
       .vc.drag iframe { pointer-events: none; }
       .vc iframe { display: block; border: 0; width: 180px; height: 150px; background: #0e0f12; color-scheme: dark; }
