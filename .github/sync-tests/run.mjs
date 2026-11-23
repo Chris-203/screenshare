@@ -361,6 +361,8 @@ async function extensionSuite(hub, web) {
     if (followed) {
       await bufferHold("Guest", guest.page, host.page, guest.page);
       await bufferHold("Host", host.page, host.page, guest.page);
+      await slowGuestPlays(host.page, guest.page);
+      await adInOwnPlayer(host.page, guest.page);
     }
 
     await hostOnly("extension", "Guest", host.page, guest.page, on => host.once({ cmd: "setControl", hostOnly: on }));
@@ -503,6 +505,47 @@ async function bufferHold(who, slow, hostPage, guestPage) {
   check("extension", `${who} buffering: still waiting 5 s in`, !!(w2 && w2.paused), w2 ? `other side ${w2.paused ? "paused" : "playing"} at ${w2.t.toFixed(2)} s` : "no video");
   await onVideo(slow, v => { v.playbackRate = 1; });
   await expectPlayingInSync("extension", `${who}'s video loads, both play on`, hostPage, guestPage, { settle: 5000 });
+}
+
+// The guest presses play and their video takes 3 s to start (a slow connection, or an ad loading), and any
+// move in the 20 s after that starts the loading over (an ad does that when it's skipped around in). The
+// host waits for the guest, then both must settle into playing together. Snapping the guest to the host's
+// spot after the wait started the loading over, which paused the host again, over and over, so the guest's
+// play button seemed to do nothing.
+async function slowGuestPlays(hostPage, guestPage) {
+  await onVideo(guestPage, v => v.pause());
+  await expectPausedInSync("extension", "Guest pauses before a slow start", hostPage, guestPage);
+  await onVideo(guestPage, v => {
+    let started = 0;
+    const stall = () => { v.playbackRate = 0; clearTimeout(v.__slow); v.__slow = setTimeout(() => { v.playbackRate = 1; }, 3000); };
+    v.__stall = e => { if (e.type === "play") { started = Date.now(); stall(); } else if (Date.now() - started < 20000) stall(); };
+    v.addEventListener("play", v.__stall);
+    v.addEventListener("seeking", v.__stall);
+  });
+  await onVideo(guestPage, v => v.play());
+  await expectPlayingInSync("extension", "Slow guest presses play, both play on", hostPage, guestPage, { settle: 12000, window: 8000 });
+  await onVideo(guestPage, v => { v.removeEventListener("play", v.__stall); v.removeEventListener("seeking", v.__stall); clearTimeout(v.__slow); v.playbackRate = 1; });
+}
+
+// An ad that plays in a second video while the show's video sits "playing" but frozen (some players do this).
+// The host waits, and the guest's ad and show are left alone: nothing pauses or moves them.
+async function adInOwnPlayer(hostPage, guestPage) {
+  await onVideo(guestPage, v => {
+    v.playbackRate = 0;
+    const ad = document.createElement("video");
+    ad.id = "fake-ad"; ad.src = "/sample.webm"; ad.muted = true; ad.width = 320; ad.height = 180;
+    v.parentElement.appendChild(ad); ad.play();
+  });
+  await sleep(4000);
+  const adState = () => guestPage.evaluate(() => { const a = document.getElementById("fake-ad"); return { t: a.currentTime, paused: a.paused }; });
+  const [h, g, a1] = await Promise.all([probe(hostPage), probe(guestPage), adState()]);
+  await sleep(3000);
+  const [g2, a2] = await Promise.all([probe(guestPage), adState()]);
+  check("extension", "Guest's ad in its own player: host waits", !!(h && h.paused), h ? `host ${h.paused ? "paused" : "playing"} at ${h.t.toFixed(2)} s` : "no video");
+  check("extension", "The guest's ad keeps playing", !a2.paused && a2.t - a1.t > 2, `ad at ${a1.t.toFixed(2)} s, then ${a2.t.toFixed(2)} s`);
+  check("extension", "The guest's show isn't paused or moved", !!(g && g2 && !g2.paused && Math.abs(g2.t - g.t) < 0.05), g2 ? `${g2.paused ? "paused" : "playing"} at ${g2.t.toFixed(2)} s` : "no video");
+  await onVideo(guestPage, v => { document.getElementById("fake-ad").remove(); v.playbackRate = 1; });
+  await expectPlayingInSync("extension", "Guest's ad ends, both play on", hostPage, guestPage, { settle: 5000 });
 }
 
 // Host only: with both playing, the guest's pause and skip are undone and the host doesn't move.
