@@ -253,6 +253,8 @@ async function partySuite(hub, web) {
     // Joining a party that is already playing.
     await join();
     await expectPlayingInSync("party", "Viewer reloads and rejoins mid-playback", host, viewer, { settle: 5000 });
+
+    await hostOnly("party", "Viewer", host, viewer, on => on ? host.check("#ctrlOpt") : host.uncheck("#ctrlOpt"));
   } finally {
     await Promise.all(browsers.map(b => b.close().catch(() => {})));
   }
@@ -303,7 +305,9 @@ async function extensionSuite(hub, web) {
       const tab = (await chrome.tabs.query({})).find(t => t.id !== me.id);
       return chrome.runtime.sendMessage({ to: "bg", ...c, tabId: tab.id });
     }, cmd);
-    return { ctx, page, popup, bg, worker };
+    // A command sent from a fresh popup page, for after the first one is closed.
+    const once = async c => { const p = await ctx.newPage(); await p.goto(`chrome-extension://${id}/popup.html`); const r = await p.evaluate(c => chrome.runtime.sendMessage({ to: "bg", ...c }), c); await p.close(); return r; };
+    return { ctx, page, popup, bg, worker, once };
   };
 
   const sides = [];
@@ -341,10 +345,30 @@ async function extensionSuite(hub, web) {
       await hasVideo(guest.page);
       await expectPlayingInSync("extension", "Both play the next episode together", host.page, guest.page, { settle: 5000 });
     }
+
+    await hostOnly("extension", "Guest", host.page, guest.page, on => host.once({ cmd: "setControl", hostOnly: on }));
   } finally {
     await Promise.all(sides.map(s => s.ctx.close().catch(() => {})));
     rmSync(work, { recursive: true, force: true });
   }
+}
+
+// Host only: with both playing, the guest's pause and skip are undone and the host doesn't move.
+// Then everyone gets control back and the guest's pause counts again.
+async function hostOnly(suite, who, host, viewer, setHostOnly) {
+  await setHostOnly(true);
+  await sleep(1500);
+  await onVideo(viewer, v => v.pause());
+  await expectPlayingInSync(suite, `Host only: ${who.toLowerCase()}'s pause is undone`, host, viewer, { settle: 3000 });
+  const h0 = (await probe(host)).t, target = h0 > 60 ? h0 - 30 : h0 + 30;
+  await onVideo(viewer, (v, t) => { v.currentTime = t; }, target);
+  await expectPlayingInSync(suite, `Host only: ${who.toLowerCase()}'s skip is undone`, host, viewer, { settle: 3500 });
+  const h1 = (await probe(host)).t;
+  check(suite, `Host only: the host stays put`, Math.abs(h1 - target) > 15, `host at ${h1.toFixed(2)} s, ${who.toLowerCase()} tried ${target.toFixed(2)} s`);
+  await setHostOnly(false);
+  await sleep(1500);
+  await onVideo(viewer, v => v.pause());
+  await expectPausedInSync(suite, `Everyone again: ${who.toLowerCase()}'s pause counts`, host, viewer);
 }
 
 // One person's ad break, from start to end. `hostPage` and `guestPage` are only for the drift check.

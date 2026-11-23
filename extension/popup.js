@@ -26,6 +26,8 @@ async function render() {
   $("stat").textContent = (LABELS[s.status] || (() => s.status))(s.partnerName);
   $("dot").className = "dot" + (s.status === "connected" ? " on" : "");
   show($("bind"), !s.isPartyTab);
+  show($("ctrlRow"), s.party.role === "host");
+  if (document.activeElement !== $("hostOnly")) $("hostOnly").checked = !!s.hostOnly;
   renderRequests(s.party.role === "host" ? s.requests || [] : []);
 }
 
@@ -79,4 +81,5 @@ $("join").onclick = async () => {
 $("code").addEventListener("keydown", e => { if (e.key === "Enter") $("join").click(); });
 $("bind").onclick = async () => { err(); const r = await bg({ cmd: "bindTab", tabId }); if (!r.ok) err(r.error); render(); };
 $("copy").onclick = async () => { await navigator.clipboard.writeText($("codeOut").textContent); $("copy").textContent = "Copied"; setTimeout(() => $("copy").textContent = "Copy code", 1200); };
+$("hostOnly").onchange = async () => { await bg({ cmd: "setControl", hostOnly: $("hostOnly").checked }); render(); };
 $("leave").onclick = async () => { await bg({ cmd: "leave" }); render(); };
