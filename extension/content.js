@@ -10,6 +10,7 @@
   let active = false, role = null, partner = "Partner", linkStatus = "idle";
   let requests = [];   // host only: people waiting for Allow / Deny, [{ id, name }]
   let video = null, suppressUntil = 0, pausedMismatch = 0;
+  let askedSync = false, following = false;
   const off = [];
 
   const fmt = s => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2, "0")}:${x}` : `${m}:${x}`; };
@@ -219,7 +220,10 @@
       "party-full": ["Party is full", false],
     };
     const [t, on] = map[linkStatus] || ["Watch Sync", false];
-    pill(t, on, !on);
+    const waits = waitingOn();
+    if (on && myAd) pill(waits.length ? `Ad break. ${namesOf(waits)} ${waits.length > 1 ? "are" : "is"} in one too` : "You're in an ad. Everyone will wait for you", true, true);
+    else if (on && held) pill(`Waiting for ${namesOf(waits)}'s ad${waits.length > 1 ? "s" : ""} to end…`, false, true);
+    else pill(t, on, !on);
     $("cin").disabled = !on;
     $("cin").placeholder = on ? "Message" : "Waiting for your partner…";
   }
@@ -239,6 +243,8 @@
     off.splice(0).forEach(f => f());
     video = v;
     if (!v) return;
+    // A guest on a freshly loaded page (after following the host, or a reload) asks for the host's spot right away.
+    if (active && role === "guest" && !askedSync) { askedSync = true; send({ type: "syncreq" }); }
     ["play", "pause", "seeked"].forEach(type => {
       const fn = () => onLocal(type);
       v.addEventListener(type, fn);
@@ -260,7 +266,9 @@
 
   // ------------------------------------------------------------ local → partner
   function onLocal(type) {
-    if (!active || !video || Date.now() < suppressUntil) return;
+    // During your own ad the video's events belong to the ad, so none of them go out.
+    if (!active || !video || myAd || Date.now() < suppressUntil) return;
+    if (held && type === "play") { suppress(800); doPause(); askToWait(); return; }
     const t = video.currentTime, at = Date.now();
     if (type === "seeked") send({ type: "seek", t, paused: video.paused, at });
     else send({ type, t, at });
@@ -271,6 +279,7 @@
   const nameOf = m => (typeof m.from === "string" && m.from.trim().slice(0, 20)) || partner;
   function applyRemote(m) {
     const partner = nameOf(m);
+    if (myAd || following || (held && m.type === "play")) return;
     bind();
     if (!video) return toast(`${partner} is playing something, open the same title to sync`);
     const elapsed = Math.max(0, (Date.now() - m.at) / 1000);
@@ -293,7 +302,7 @@
 
   // Guest quietly follows the host's heartbeat to correct any drift.
   function onTick(m) {
-    if (role !== "guest" || !video) return;
+    if (role !== "guest" || !video || myAd || held || following) return;
     const elapsed = Math.max(0, (Date.now() - m.at) / 1000);
     const target = m.paused ? m.t : m.t + elapsed;
     if (m.force || m.paused !== video.paused) {
@@ -312,7 +321,7 @@
   }
 
   function sendTick(force) {
-    if (!active || role !== "host" || !video) return;
+    if (!active || role !== "host" || !video || myAd) return;
     send({ type: "tick", t: video.currentTime, paused: video.paused, at: Date.now(), force: !!force });
   }
 
@@ -345,23 +354,171 @@
     return u;
   }
 
+  // Pages where a title is actually playing. Prime Video and Apple TV+ open their player over
+  // the title's page without a URL of its own, so they get the "Open" prompt instead.
+  const WATCH_PAGES = [
+    [/(^|\.)netflix\.com$/, /^\/watch\//],
+    [/(^|\.)disneyplus\.com$/, /\/(video|play)\//],
+    [/(^|\.)(max|hbomax)\.com$/, /\/(video\/watch|play)\//],
+    [/(^|\.)hulu\.com$/, /^\/watch\//],
+    [/(^|\.)youtube\.com$/, /^\/watch$/],
+    [/(^|\.)peacocktv\.com$/, /^\/watch\/playback\//],
+    [/(^|\.)paramountplus\.com$/, /\/video\//],
+    [/(^|\.)crunchyroll\.com$/, /^\/([a-z]{2}(-[a-z]{2})?\/)?watch\//],
+  ];
+  const isWatchPage = u => WATCH_PAGES.some(([h, p]) => h.test(u.hostname) && p.test(u.pathname));
+  // Two addresses are the same page if host, path and (YouTube's) video id match; tracking bits in the query don't count.
+  const pageKey = u => u.hostname.replace(/^www\./, "") + u.pathname.replace(/\/+$/, "") + (u.searchParams.get("v") ? "?v=" + u.searchParams.get("v") : "");
+  // Follow the same address at most once a minute, so a service that redirects one of us somewhere
+  // else can't turn this into a reload loop. Kept per tab, across the reload that following causes.
+  function canFollow(href) {
+    try {
+      const last = JSON.parse(sessionStorage.getItem("watchsync-follow") || "null");
+      if (last && last.href === href && Date.now() - last.at < 60000) return false;
+      sessionStorage.setItem("watchsync-follow", JSON.stringify({ href, at: Date.now() }));
+    } catch {}
+    return true;
+  }
+
   function onNav(m) {
     const theirs = navTarget(m && m.url);
-    if (!theirs) return;
+    if (!theirs || following) return;
     const partner = nameOf(m);
-    if (theirs.hostname === location.hostname && theirs.pathname === location.pathname) return;
+    if (pageKey(theirs) === pageKey(new URL(location.href))) return;
     const title = String(m.title || "").slice(0, 120).replace(/\s*[|\-–—]\s*(Netflix|Disney\+|Max|Hulu|Prime Video|YouTube|Peacock|Paramount\+).*$/i, "").trim();
+    // When the host starts something else (the next episode, autoplay, a new title), guests go with them.
+    // Only the host's own messages count: the host's side marks them, and a guest can't fake that mark.
+    if (role === "guest" && m.fromHost === true && isWatchPage(theirs) && canFollow(theirs.href)) {
+      following = true;
+      toast(`Following ${partner} to ${title || "the next video"}…`, null, null, 4000);
+      setTimeout(() => { location.href = theirs.href; }, 700);
+      return;
+    }
     toast(`${partner} is on ${title || theirs.hostname}`, "Open", () => { location.href = theirs.href; }, 9000);
   }
 
   function onPeer(m) {
     if (!active || !m) return;
-    if (m.type === "joined") { sendNav(); setTimeout(() => sendTick(true), 400); return; }
+    if (m.type === "joined") { sendNav(); sendAd(); setTimeout(() => sendTick(true), 400); return; }
+    if (m.type === "syncreq") { if (role === "host" && syncIn()) { sendNav(); sendAd(); setTimeout(() => sendTick(true), 300); } return; }
+    if (m.type === "ad") return onAd(m);
     if (m.type === "play" || m.type === "pause" || m.type === "seek") applyRemote(m);
     else if (m.type === "tick") onTick(m);
     else if (m.type === "nav") onNav(m);
     else if (m.type === "chat") onChat(m);
     else if (m.type === "react") onReact(m);
+  }
+
+  // ------------------------------------------------------------ ad breaks
+  // Ads on ad-supported plans are part of the stream and can't be skipped, so instead the party waits:
+  // whoever is in an ad tells the others, everyone else pauses, and when the last ad ends the host
+  // picks up where it paused and brings everyone back to its spot.
+  // Each service marks its ad UI differently, so there are two checks: known ad elements anywhere on
+  // the page, and ad wording ("Ad 1 of 2", "Ad · 0:30", "Your show will resume…") near the video.
+  const AD_SELECTORS = [
+    ".html5-video-player.ad-showing", ".html5-video-player.ad-interrupting",                            // YouTube
+    ".atvwebplayersdk-ad-timer", ".atvwebplayersdk-ad-timer-text", ".atvwebplayersdk-adtimeindicator-text", // Prime Video
+    "[data-uia^='ads-']", "[data-uia*='ad-break']", "[data-uia*='advert']",                              // Netflix with ads
+    ".AdUnitView", ".ad-countdown", "[class*='AdCountdown']", "[class*='adCountdown']",                   // Hulu, Peacock and others
+    "[class*='AdBadge']", "[class*='ad-badge']", "[data-testid*='ad-badge']", "[data-testid*='ad-countdown']", "[data-testid*='ad-timer']",
+  ].join(",");
+  const AD_TEXT = [
+    /^(ad|ads|advertisement)$/i,
+    /^ads?\s*\d+\s*(of|\/)\s*\d+/i,
+    /^ads?\s*[·•:|-]?\s*\(?\d{1,2}:\d{2}\)?$/i,
+    /^(ad|commercial) break\b/i,
+    /\b(your|the) (show|video|program|movie|episode) will (resume|continue|start|begin)\b/i,
+    /\b(show|video|program|movie|episode) (resumes|continues|starts|begins) in\b/i,
+  ];
+  const AD_STALE = 15000;   // someone in an ad repeats it every 5 s; past this they're treated as gone
+  let myAd = false, adMisses = 0, adSent = 0, held = false, resumeAfterHold = false, lastPlaying = 0, wasBusy = false, adKey = "";
+  const adsBy = new Map();     // name -> when we last heard they're in an ad
+  const adIgnored = new Set(); // names this person chose not to wait for, until that ad ends
+  const adIn = limiter(10, 1000), syncIn = limiter(3, 3000);
+  const namesOf = a => a.length < 2 ? (a[0] || "") : `${a.slice(0, -1).join(", ")} and ${a[a.length - 1]}`;
+  const waitingOn = () => [...adsBy.keys()].filter(n => !adIgnored.has(n));
+
+  const visible = el => {
+    if (!el || !el.isConnected) return false;
+    if (el.checkVisibility) return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+    const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0;
+  };
+  const up = n => n.parentElement || (n.parentNode && n.parentNode.host) || null;   // steps out of shadow roots too
+  function playerRoot(v) {
+    let n = v;
+    for (let i = 0; i < 6; i++) { const p = up(n); if (!p || p === document.body || p === document.documentElement) break; n = p; }
+    return n;
+  }
+  // Short visible text near the video, including inside open shadow roots (Disney+ and Max use them).
+  function adText(start) {
+    let budget = 4000, found = false;
+    const walk = node => {
+      for (let c = node.firstChild; c && !found && budget-- > 0; c = c.nextSibling) {
+        if (c.nodeType === 3) { const t = c.data.trim(); if (t && t.length <= 60 && AD_TEXT.some(r => r.test(t)) && visible(c.parentElement)) found = true; }
+        else if (c.nodeType === 1 && c.tagName !== "SCRIPT" && c.tagName !== "STYLE") { if (c.shadowRoot) walk(c.shadowRoot); walk(c); }
+      }
+    };
+    walk(start);
+    return found;
+  }
+  function adOnPage() {
+    if (!video) return false;   // an ad needs a player; this keeps menus and account pages out of it
+    try {
+      for (const el of document.querySelectorAll(AD_SELECTORS)) if (visible(el)) return true;
+      return !!video && adText(playerRoot(video));
+    } catch { return false; }
+  }
+
+  const sendAd = () => { if (myAd) { adSent = Date.now(); send({ type: "ad", on: true, at: adSent }); } };
+  function watchAnyway() {
+    waitingOn().forEach(n => adIgnored.add(n));
+    updateHold();
+    if (video && video.paused) doPlay();
+  }
+  const askToWait = () => toast(`Waiting for ${namesOf(waitingOn())}'s ad to end`, "Watch anyway", watchAnyway, 8000);
+
+  function checkAd() {
+    if (!active) return;
+    bind();
+    const now = Date.now(), hit = adOnPage();
+    adMisses = hit ? 0 : adMisses + 1;
+    if (!myAd && hit) { myAd = true; sendAd(); }
+    else if (myAd && adMisses >= 3) { myAd = false; suppress(1500); send({ type: "ad", on: false, at: now }); }  // 1.5 s clear, so a flicker isn't an end
+    else if (myAd && now - adSent > 5000) sendAd();
+    if (video && !video.paused && !myAd && !held) lastPlaying = now;
+    for (const [n, t] of adsBy) if (now - t > AD_STALE) { adsBy.delete(n); adIgnored.delete(n); }
+    updateHold();
+  }
+
+  function onAd(m) {
+    if (!adIn()) return;
+    const who = nameOf(m);
+    if (m.on === true) adsBy.set(who, Date.now());
+    else { adsBy.delete(who); adIgnored.delete(who); }
+    updateHold();
+  }
+
+  function updateHold() {
+    const waits = waitingOn(), busy = myAd || waits.length > 0, was = held;
+    held = !myAd && waits.length > 0;
+    // The host remembers whether the show was playing when the break began, to pick up again after it.
+    if (busy && !wasBusy && role === "host") resumeAfterHold = myAd || Date.now() - lastPlaying < 3000;
+    if (held) {
+      bind();
+      if (video && !video.paused) { suppress(1500); doPause(); }
+      if (!was) askToWait();
+    }
+    if (!busy && wasBusy && role === "host") {
+      // Everyone's ad is over: play again if we were playing, then put everyone on the host's spot.
+      setTimeout(() => {
+        if (!active || myAd || held) return;
+        if (resumeAfterHold && video && video.paused) { suppress(1500); doPlay(); }
+        setTimeout(() => sendTick(true), 400);
+      }, 500);
+    }
+    wasBusy = busy;
+    const key = `${myAd}|${held}|${waits.join(",")}`;
+    if (key !== adKey) { adKey = key; if (active) renderStatus(); }
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -373,8 +530,10 @@
     requests = Array.isArray(info.requests) ? info.requests : [];
     mountUI(); renderStatus(); renderRequests();
     timers.forEach(clearInterval);
+    askedSync = false;
     timers = [
       setInterval(bind, 1000),
+      setInterval(checkAd, 500),
       setInterval(() => sendTick(false), 4000),
       setInterval(() => { if (location.href !== lastHref) { lastHref = location.href; sendNav(); } }, 1000),
     ];
@@ -385,6 +544,7 @@
   function deactivate() {
     active = false; timers.forEach(clearInterval); timers = [];
     off.splice(0).forEach(f => f()); video = null;
+    myAd = false; held = false; wasBusy = false; adMisses = 0; adsBy.clear(); adIgnored.clear(); adKey = "";
     hostEl.remove();
     document.removeEventListener("mousemove", showBtn);
     openChat(false); setUnread(0); $("log").replaceChildren(); $("floats").replaceChildren();

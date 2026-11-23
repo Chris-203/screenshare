@@ -164,6 +164,7 @@ function onGuest(c) {
     if (RESERVED.has(m.type)) return;
     if (typeof m.at === "number") m.at -= g.offset; // their clock → ours
     m.from = g.name;                                // set here, so a guest can't speak as someone else
+    m.fromHost = false;                             // only the host's own messages may say they're from the host
     // Pass it on to everyone else. `at` is now on the host's clock, which is what each guest translates from.
     for (const x of guests.values()) if (x.ok && x !== g) sendTo(x.conn, m);
     toBg({ type: "peerMsg", msg: m });
@@ -228,7 +229,7 @@ function attach(c) {
 function send(msg) {
   if (!party || !msg || typeof msg !== "object") return;
   if (party.role === "guest") { if (welcomed) sendTo(conn, msg); return; }
-  msg.from = party.name;
+  msg.from = party.name; msg.fromHost = true;
   for (const g of guests.values()) if (g.ok) sendTo(g.conn, msg);
 }
 

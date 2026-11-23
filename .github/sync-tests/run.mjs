@@ -140,6 +140,12 @@ function record(suite, step, kind, worst, limit, ok, note = "") {
   // With --fault one failure is the whole point; the steps after it would only time out.
   if (fault && !ok) throw new DriftError(step);
 }
+// A yes/no check that isn't a drift measurement.
+function check(suite, step, ok, note = "") {
+  results.push({ suite, step, kind: "check", worst: NaN, limit: null, ok, note });
+  console.log(`  ${ok ? "ok  " : "FAIL"}  ${step.padEnd(44)} check${note ? "    " + note : ""}`);
+  if (fault && !ok) throw new DriftError(step);
+}
 
 // Both playing: after `settle`, sample for `window` and compare positions.
 async function expectPlayingInSync(suite, step, host, viewer, { settle = 4000, window = 6000 } = {}) {
@@ -264,7 +270,7 @@ async function extensionSuite(hub, web) {
   writeFileSync(join(ext, "peerjs.min.js"), fakePeerSource(hub.port));
   const SITE = "https://www.youtube.com/watch?v=sync-test";
   const html = `<!doctype html><meta charset="utf-8"><title>Sync test video</title><body style="margin:0;background:#000">
-    <video src="/sample.webm" width="640" height="360" controls preload="auto"></video>`;
+    <div id="movie_player" class="html5-video-player"><video src="/sample.webm" width="640" height="360" controls preload="auto"></video></div>`;
   // The video is answered here too (with Range, so seeking works) because Chromium asks for a
   // permission before a public https page may load anything from 127.0.0.1.
   const sample = readFileSync(join(here, "sample.webm"));
@@ -317,10 +323,45 @@ async function extensionSuite(hub, web) {
 
     await expectPausedInSync("extension", "Guest joins before anything plays", host.page, guest.page, { settle: 500 });
     await scenario("extension", host.page, guest.page, hub, { host: "Host", viewer: "Guest" });
+
+    // Ad breaks. The stand-in page marks an ad the way YouTube does (ad-showing on the player), and the
+    // video keeps playing as the ad would. The other side has to wait, and both pick up together after.
+    await adBreak("Guest", guest.page, host.page, guest.page);
+    await adBreak("Host", host.page, host.page, guest.page);
+
+    // Next episode: the host moves to another video and starts it; the guest follows by itself.
+    const next = SITE.replace("sync-test", "sync-test-2");
+    await host.page.goto(next);
+    await hasVideo(host.page);
+    await onVideo(host.page, v => v.play());
+    let followed = true;
+    try { await until("the guest to follow the host", async () => guest.page.url() === next, 20000); } catch { followed = false; }
+    check("extension", "Host starts the next episode, guest follows", followed, followed ? "" : `guest stayed on ${guest.page.url()}`);
+    if (followed) {
+      await hasVideo(guest.page);
+      await expectPlayingInSync("extension", "Both play the next episode together", host.page, guest.page, { settle: 5000 });
+    }
   } finally {
     await Promise.all(sides.map(s => s.ctx.close().catch(() => {})));
     rmSync(work, { recursive: true, force: true });
   }
+}
+
+// One person's ad break, from start to end. `hostPage` and `guestPage` are only for the drift check.
+async function adBreak(who, inAd, hostPage, guestPage) {
+  const other = inAd === hostPage ? guestPage : hostPage;
+  const setAd = on => inAd.evaluate(on => document.querySelector(".html5-video-player").classList.toggle("ad-showing", on), on);
+  await setAd(true);
+  await sleep(2500);
+  const [a, w] = await Promise.all([probe(inAd), probe(other)]);
+  check("extension", `${who} in an ad: the other side waits`, !!(a && w && !a.paused && w.paused), w ? `waiting at ${w.t.toFixed(2)} s` : "no video");
+  // The ad has its own timeline. Nothing it does may reach the side that's waiting.
+  await onVideo(inAd, v => { v.currentTime = 5; });
+  await sleep(2000);
+  const w2 = await probe(other);
+  check("extension", `${who}'s ad seeks stay on ${who === "Host" ? "the host" : "the guest"}`, !!(w && w2 && w2.paused && Math.abs(w2.t - w.t) < 0.3), w2 ? `other side at ${w2.t.toFixed(2)} s` : "no video");
+  await setAd(false);
+  await expectPlayingInSync("extension", `${who}'s ad ends, both play on`, hostPage, guestPage, { settle: 5000 });
 }
 
 // ---------------------------------------------------------------- run
@@ -329,7 +370,7 @@ function summary() {
   const out = process.env.GITHUB_STEP_SUMMARY;
   if (out) {
     const ms = n => (isFinite(n) ? `${Math.round(n)} ms` : "n/a");
-    const rows = results.map(r => `| ${r.suite} | ${r.step} | ${r.kind} | ${ms(r.worst)} | ${r.limit} ms | ${r.ok ? "ok" : "**FAIL**"} | ${r.note} |`);
+    const rows = results.map(r => `| ${r.suite} | ${r.step} | ${r.kind} | ${ms(r.worst)} | ${r.limit == null ? "n/a" : r.limit + " ms"} | ${r.ok ? "ok" : "**FAIL**"} | ${r.note} |`);
     appendFileSync(out, [`### Sync drift${fault ? " (fault injected, failure expected)" : ""}`, "", "| Suite | Step | State | Worst drift | Limit | Result | Notes |", "|---|---|---|---|---|---|---|", ...rows, ""].join("\n"));
   }
   return failed;
