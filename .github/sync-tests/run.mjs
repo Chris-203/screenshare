@@ -762,11 +762,13 @@ async function screenSuite(web) {
     await strict.click("#unmuteBtn");
     await hears("Strict browser: one tap and the viewer hears it", strict);
     ok("Strict browser: Tap for sound goes away", await strict.$eval("#unmuteBtn", b => b.classList.contains("hidden")));
-    await strict.click("#soundBtn", { force: true });
-    ok("Sound button mutes, page keeps saying sound is off", await strict.evaluate(() => {
+    // The toolbar fades after a few seconds; moving the mouse brings it back, as it does for a person.
+    await strict.mouse.move(300, 200); await strict.mouse.move(320, 220);
+    await strict.click("#soundBtn");
+    ok("Sound button mutes, page keeps saying sound is off", await until("the sound off state", () => strict.evaluate(() => {
       const $ = id => document.getElementById(id);
       return $("remote").muted && $("soundBtn").textContent.includes("Sound off") && !$("unmuteBtn").classList.contains("hidden") && $("unmuteBtn").textContent.includes("Sound off");
-    }));
+    }), 3000).catch(() => false));
     await strict.click("#unmuteBtn");
     await hears("Tapping that turns sound back on", strict);
 
