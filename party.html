@@ -644,7 +644,7 @@
       const v = viewers.get(id);
       if (!v || !v.ok || !v.conn.open || !v.wantsStream || !stream || !stream.getTracks().length) return;
       if (v.call) v.call.close();
-      v.call = peer.call(id, stream);
+      v.call = peer.call(id, stream, { sdpTransform: Quality.preferH264 });
       setTimeout(() => tune(v), 800);
       setTimeout(() => tune(v), 3000);
     }
@@ -991,7 +991,7 @@
         peer = new Peer({ debug: 1, config: ICE.config });
         peer.on("open", () => ICE.ready().then(openConn));
         peer.on("call", call => {
-          call.answer();
+          call.answer(undefined, { sdpTransform: Quality.preferH264 });
           call.on("stream", st => {
             sv.srcObject = st;
             try { call.peerConnection.getReceivers().forEach(r => { if ("jitterBufferTarget" in r) r.jitterBufferTarget = 120; }); } catch {}

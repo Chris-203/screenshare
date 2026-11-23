@@ -276,14 +276,17 @@
       setStatus();
     }
 
-    // Size and bitrate are the viewer's pick (quality.js); favor sharp text over frame rate.
-    const tuneSender = v => v.call && Quality.apply(v.call.peerConnection, v.quality, 6, p => { p.degradationPreference = "maintain-resolution"; });
+    // Size and bitrate are the viewer's pick (quality.js). When the network or the computer
+    // can't keep up, let the encoder lower the size as well as the frame rate ("balanced").
+    // "maintain-resolution" only dropped frames, so a warm laptop or a busy upload turned
+    // the share into a slideshow a few minutes in.
+    const tuneSender = v => v.call && Quality.apply(v.call.peerConnection, v.quality, 6, p => { p.degradationPreference = "balanced"; });
 
     function callViewer(id) {
       const v = viewers.get(id);
       if (!v || !v.ok || !stream || !v.conn.open) return;
       if (v.call) v.call.close();
-      v.call = peer.call(id, stream);
+      v.call = peer.call(id, stream, { sdpTransform: Quality.preferH264 });
       v.call.on("iceStateChanged", st => { if (st === "connected") tuneSender(v); });
       setTimeout(() => tuneSender(v), 1500);
     }
@@ -339,13 +342,16 @@
     async function pickScreen() {
       try {
         const next = await navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 2560 }, height: { ideal: 1440 } },
+          // 1080p is plenty for a movie and costs about half the encoding work of 1440p,
+          // which the host does once for every viewer.
+          video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
           // Movie and game sound, not a voice: no echo cancelling, noise removal or volume leveling.
           audio: $("withAudio").checked && { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
           systemAudio: "include",
         });
         const vt = next.getVideoTracks()[0];
-        if ("contentHint" in vt) vt.contentHint = "detail";
+        // "motion": tuned for video on the screen. "detail" is tuned for text and gives up smoothness first.
+        if ("contentHint" in vt) vt.contentHint = "motion";
         vt.addEventListener("ended", () => { if (stream === next) stopSharing(); });
         if (stream) stream.getTracks().forEach(t => t.stop());
         stream = next;
@@ -443,7 +449,7 @@
         peer = new Peer({ debug: 1, config: ICE.config });
         peer.on("open", () => ICE.ready().then(openConn));
         peer.on("call", call => {
-          call.answer();
+          call.answer(undefined, { sdpTransform: Quality.preferH264 });
           call.on("stream", s => {
             if (video.srcObject !== s) video.srcObject = s; // "stream" comes once per track; don't restart the video
             s.onaddtrack = s.onremovetrack = syncSound;
