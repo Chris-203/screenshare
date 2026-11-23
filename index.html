@@ -86,6 +86,12 @@
   @media (max-width: 440px) { .toolbar { gap: 2px; padding: 4px; } .toolbar button { padding: 9px 8px; font-size: 13px; } }
   @media (max-width: 360px) { .toolbar button { padding: 9px 6px; font-size: 12px; } }
   #tapToPlay { pointer-events: auto; }
+  #unmuteBtn { position: fixed; left: 50%; top: max(16px, env(safe-area-inset-top)); transform: translateX(-50%);
+    padding: 10px 16px; font-size: 15px; box-shadow: 0 4px 18px rgba(0,0,0,.4); }
+  #unmuteBtn.quiet { background: rgba(23,25,30,.86); color: var(--text); font-weight: 500; font-size: 14px; border: 1px solid var(--line); }
+  .toolbar button.off { color: var(--danger); }
+  .toolbar button:disabled { color: var(--muted); cursor: default; }
+  .warn { color: var(--danger); font-size: 13px; margin: 0; }
 </style>
 </head>
 <body>
@@ -123,13 +129,14 @@
     </div>
     <div id="requests" class="stack hidden"></div>
     <video id="preview" class="hidden" muted playsinline autoplay></video>
-    <label class="check"><input type="checkbox" id="withAudio"> Include computer sound</label>
+    <label class="check"><input type="checkbox" id="withAudio" checked> Include computer sound</label>
+    <p id="noSound" class="warn hidden">No sound is going out. Chrome only shares sound from a tab (with "Also share tab audio" on) or your entire screen (with "Also share system audio" on), never from a single window. Press Switch window and pick one of those.</p>
     <button id="startBtn" class="primary" disabled>Choose screen or window</button>
     <div class="row hidden" id="liveRow">
       <button id="switchBtn">Switch window</button>
       <button id="stopBtn" class="danger">Stop</button>
     </div>
-    <p class="note">Tip: sharing a single window looks sharper than a whole monitor. Nobody sees your screen until you press Allow for them. The link is new each time you open this page. <a href="#" id="newCode" style="color:var(--muted)">Make a new one now</a></p>
+    <p class="note">Tip: for sound, share a Chrome tab or your entire screen; a single window looks sharp but has no sound. Nobody sees your screen until you press Allow for them. The link is new each time you open this page. <a href="#" id="newCode" style="color:var(--muted)">Make a new one now</a></p>
   </div>
 </section>
 
@@ -147,17 +154,18 @@
 
 <!-- ============ VIEWER ============ -->
 <section id="viewer" class="hidden">
-  <video id="remote" playsinline autoplay muted></video>
+  <video id="remote" playsinline autoplay></video>
   <div id="overlay" class="overlay">
     <div><div class="spinner"></div><div class="big" id="ovTitle">Connecting…</div><div id="ovSub"></div></div>
   </div>
   <div id="tapOverlay" class="overlay hidden">
     <button id="tapToPlay" class="primary">Tap to start</button>
   </div>
+  <button id="unmuteBtn" class="primary hidden">🔇 Tap for sound</button>
   <div id="toolbar" class="toolbar hidden">
     <button id="fitBtn" class="on">Fit</button>
     <button id="actualBtn">Actual size</button>
-    <button id="soundBtn" class="hidden">Sound off</button>
+    <button id="soundBtn" class="hidden on">🔊 Sound on</button>
     <button id="qualityBtn">Quality</button>
     <button id="fsBtn">Full screen</button>
   </div>
@@ -332,7 +340,9 @@
       try {
         const next = await navigator.mediaDevices.getDisplayMedia({
           video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 2560 }, height: { ideal: 1440 } },
-          audio: $("withAudio").checked,
+          // Movie and game sound, not a voice: no echo cancelling, noise removal or volume leveling.
+          audio: $("withAudio").checked && { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+          systemAudio: "include",
         });
         const vt = next.getVideoTracks()[0];
         if ("contentHint" in vt) vt.contentHint = "detail";
@@ -342,6 +352,7 @@
         $("preview").srcObject = stream;
         show($("preview")); show($("startBtn"), false); show($("liveRow"));
         $("withAudio").disabled = true;
+        show($("noSound"), $("withAudio").checked && !stream.getAudioTracks().length);
         broadcast({ type: "live" });
         viewers.forEach((_, id) => callViewer(id));
         setStatus();
@@ -357,8 +368,12 @@
       $("preview").srcObject = null;
       show($("preview"), false); show($("startBtn")); show($("liveRow"), false);
       $("withAudio").disabled = false;
+      show($("noSound"), false);
       setStatus();
     }
+    // Sound is on unless the host turned it off before (remembered on this computer).
+    $("withAudio").checked = store.get("ss-audio") !== "off";
+    $("withAudio").onchange = () => store.set("ss-audio", $("withAudio").checked ? "on" : "off");
     $("startBtn").onclick = pickScreen;
     $("switchBtn").onclick = pickScreen;
     $("stopBtn").onclick = stopSharing;
@@ -383,11 +398,38 @@
       try { if ("wakeLock" in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.onrelease = () => wakeLock = null; } } catch {}
     };
     // Let the screen sleep again whenever there is no picture (sharing paused, ended, or reconnecting).
-    const clearVideo = () => { video.srcObject = null; if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; } };
+    const clearVideo = () => { video.srcObject = null; show($("unmuteBtn"), false); if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; } };
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && video.srcObject) keepAwake(); });
 
-    const tryPlay = () => video.play().then(() => show($("tapOverlay"), false)).catch(() => show($("tapOverlay")));
+    // Sound plays unless the viewer turned it off. A browser that wants a click on the page before
+    // it plays sound (Safari, or Chrome before any click) gets the picture muted and a big
+    // "Tap for sound" button; any tap on the page then turns the sound on.
+    let wantSound = true;
+    const hasAudio = () => !!(video.srcObject && video.srcObject.getAudioTracks().length);
+    // The toolbar button always says where sound stands. While sound is off, a button at the top
+    // stays on screen (it doesn't fade with the toolbar) so it's never a mystery why it's quiet.
+    const syncSound = () => {
+      const audio = hasAudio(), on = audio && !video.muted, b = $("soundBtn");
+      show(b, !!video.srcObject); b.disabled = !audio;
+      b.textContent = !audio ? "🔈 No sound shared" : on ? "🔊 Sound on" : "🔇 Sound off";
+      b.classList.toggle("on", on); b.classList.toggle("off", audio && !on);
+      const u = $("unmuteBtn");
+      show(u, audio && video.muted);
+      u.textContent = wantSound ? "🔇 Tap for sound" : "🔇 Sound off · tap to turn on";
+      u.classList.toggle("quiet", !wantSound);
+    };
+    const tryPlay = () => {
+      video.muted = !wantSound;
+      return video.play().catch(e => {
+        if (video.muted || e.name !== "NotAllowedError") throw e; // AbortError: a newer play() took over
+        video.muted = true; // sound was refused: show the picture now, ask for a tap for sound
+        return video.play();
+      }).then(() => show($("tapOverlay"), false), e => { if (e.name !== "AbortError") show($("tapOverlay")); }).then(syncSound);
+    };
+    video.addEventListener("volumechange", syncSound);
     $("tapToPlay").onclick = () => { tryPlay(); keepAwake(); };
+    $("unmuteBtn").onclick = e => { e.stopPropagation(); wantSound = true; tryPlay(); };
+    viewer.addEventListener("pointerup", e => { if (!e.target.closest("button") && wantSound && video.muted && video.srcObject) tryPlay(); });
 
     // One pending retry at a time: always clear the old timer before arming a new one.
     // A pending peer rebuild (network error) wins over a plain redial, which would run on a dead peer.
@@ -403,9 +445,8 @@
         peer.on("call", call => {
           call.answer();
           call.on("stream", s => {
-            video.srcObject = s;
-            const hasAudio = s.getAudioTracks().length > 0;
-            show($("soundBtn"), hasAudio);
+            if (video.srcObject !== s) video.srcObject = s; // "stream" comes once per track; don't restart the video
+            s.onaddtrack = s.onremovetrack = syncSound;
             overlay(null); show($("toolbar")); bumpToolbar();
             tryPlay(); keepAwake();
           });
@@ -472,7 +513,7 @@
 
     $("fitBtn").onclick = () => { viewer.classList.remove("actual"); $("fitBtn").classList.add("on"); $("actualBtn").classList.remove("on"); };
     $("actualBtn").onclick = () => { viewer.classList.add("actual"); $("actualBtn").classList.add("on"); $("fitBtn").classList.remove("on"); };
-    $("soundBtn").onclick = () => { video.muted = !video.muted; $("soundBtn").textContent = video.muted ? "Sound off" : "Sound on"; $("soundBtn").classList.toggle("on", !video.muted); tryPlay(); };
+    $("soundBtn").onclick = () => { wantSound = video.muted; tryPlay(); };
     const quality = Quality.mount($("qualityBtn"), 6, "ss-quality", q => { if (conn && conn.open) conn.send({ type: "quality", q }); });
     $("fsBtn").onclick = () => {
       if (document.fullscreenElement || document.webkitFullscreenElement) {
