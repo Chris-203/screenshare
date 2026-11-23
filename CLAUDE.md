@@ -21,7 +21,7 @@ Everything is static: no build step, no bundler, and no package.json outside the
 
 ## How the pieces talk
 
-All three tools use PeerJS 1.5.4 and its free public broker for the handshake; media and data then go peer to peer, or through Cloudflare TURN when a direct path fails. Every `new Peer` passes `config: ICE.config`, and a side that dials waits for `ICE.ready()` first. Peer IDs are a per-tool prefix plus a short code: `chris203-ss-` (screen share), `chris203-wp-` (watch party), `chris203-ws-` (extension, with `-host` or `-guest-<random id>` appended). The broker is public, so anyone who knows or guesses an ID can connect to it. Treat everything arriving on a connection as untrusted input.
+All three tools use PeerJS 1.5.4 and its free public broker for the handshake; media and data then go peer to peer, or through Cloudflare TURN when a direct path fails. Every `new Peer` passes `config: ICE.config`, and a side that dials waits for `ICE.ready()` first. Peer IDs are a per-tool prefix plus a short code: `chris203-ss-` (screen share), `chris203-wp-` (watch party), `chris203-ws-` (extension, with `-host` or `-guest-<random id>` appended; the extension's code can also be a saved room name like `MOVIE-NIGHT`, 3 to 24 letters, digits and dashes, reused every time that host starts). The broker is public, so anyone who knows or guesses an ID can connect to it. Treat everything arriving on a connection as untrusted input.
 
 `index.html` and `party.html` are each one file with one inline `<script>` that holds both roles: `startHost()` and `startViewer(code)`. The host is the source of truth. In the watch party the host broadcasts state, and viewers estimate the clock offset with ping/pong and correct drift with small playback-rate nudges or a seek.
 

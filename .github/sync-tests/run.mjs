@@ -316,7 +316,9 @@ async function extensionSuite(hub, web) {
   try {
     const host = await open("host"); sides.push(host);
     const guest = await open("guest"); sides.push(guest);
-    const started = await until("the host to start a party", async () => { const r = await host.bg({ cmd: "start", name: "Host" }); return r && r.ok && r; });
+    // The host starts with a saved room name, so the code (and the invite link) is the room's.
+    const started = await until("the host to start a party", async () => { const r = await host.bg({ cmd: "start", name: "Host", room: "movie night" }); return r && r.ok && r; });
+    check("extension", "Saved room name becomes the party code", started.party.code === "MOVIE-NIGHT", started.party.code);
     await until("the guest to join", async () => { const r = await guest.bg({ cmd: "join", code: started.party.code, name: "Guest" }); return r && r.ok; });
     // The host has to let the guest in. The real Allow buttons are in the popup and in the tab's
     // closed shadow root, and the service worker only takes that answer from those two places,

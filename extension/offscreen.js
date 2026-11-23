@@ -59,7 +59,9 @@ function open(p, attempt = 0) {
   peer.on("error", e => {
     if (!party) return;
     if (e.type === "peer-unavailable") { status("partner-offline"); clearTimeout(retryTimer); retryTimer = setTimeout(dial, 3000); }
-    else if (e.type === "unavailable-id" && attempt < 10) { retryTimer = setTimeout(() => open(party, attempt + 1), 3000); }
+    // The ID is taken: usually our own last session that the broker hasn't dropped yet, so wait it out.
+    // After about 30 s it's someone else's party with this room name.
+    else if (e.type === "unavailable-id") { if (attempt < 10) { status(attempt ? "room-busy" : "connecting"); retryTimer = setTimeout(() => open(party, attempt + 1), 3000); } else status("room-taken"); }
     else if (["network", "server-error", "socket-error", "socket-closed"].includes(e.type)) { status("reconnecting"); retryTimer = setTimeout(() => open(party), 4000); }
   });
 }
