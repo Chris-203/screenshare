@@ -11,6 +11,7 @@
   let requests = [];   // host only: people waiting for Allow / Deny, [{ id, name }]
   let video = null, suppressUntil = 0, pausedMismatch = 0;
   let askedSync = false, following = false;
+  let hostOnly = false, lastHost = null;   // lastHost: the host's latest { t, paused, at }, for putting a guest back
   const off = [];
 
   const fmt = s => { s = Math.max(0, Math.floor(s || 0)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2, "0")}:${x}` : `${m}:${x}`; };
@@ -269,6 +270,7 @@
     // During your own ad the video's events belong to the ad, so none of them go out.
     if (!active || !video || myAd || Date.now() < suppressUntil) return;
     if (held && type === "play") { suppress(800); doPause(); askToWait(); return; }
+    if (role === "guest" && hostOnly && !adsBy.size) return putBack();
     const t = video.currentTime, at = Date.now();
     if (type === "seeked") send({ type: "seek", t, paused: video.paused, at });
     else send({ type, t, at });
@@ -279,6 +281,12 @@
   const nameOf = m => (typeof m.from === "string" && m.from.trim().slice(0, 20)) || partner;
   function applyRemote(m) {
     const partner = nameOf(m);
+    if (m.fromHost === true && role === "guest") lastHost = { t: m.t, paused: m.type === "seek" ? !!m.paused : m.type === "pause", at: m.at };
+    if (hostOnly && !(role === "guest" && m.fromHost === true)) {
+      // Host only: a guest's play, pause or skip changes nothing; the host answers with its spot so they snap back.
+      if (role === "host" && snapIn()) setTimeout(() => sendTick(true), 150);
+      return;
+    }
     if (myAd || following || (held && m.type === "play")) return;
     bind();
     if (!video) return toast(`${partner} is playing something, open the same title to sync`);
@@ -302,7 +310,9 @@
 
   // Guest quietly follows the host's heartbeat to correct any drift.
   function onTick(m) {
-    if (role !== "guest" || !video || myAd || held || following) return;
+    if (role !== "guest") return;
+    if (m.fromHost === true) { lastHost = { t: m.t, paused: !!m.paused, at: m.at }; setHostOnly(m.hostOnly === true); }
+    if (!video || myAd || held || following || adsBy.size) return;
     const elapsed = Math.max(0, (Date.now() - m.at) / 1000);
     const target = m.paused ? m.t : m.t + elapsed;
     if (m.force || m.paused !== video.paused) {
@@ -322,10 +332,21 @@
 
   function sendTick(force) {
     if (!active || role !== "host" || !video || myAd) return;
-    send({ type: "tick", t: video.currentTime, paused: video.paused, at: Date.now(), force: !!force });
+    send({ type: "tick", t: video.currentTime, paused: video.paused, at: Date.now(), force: !!force, hostOnly });
   }
 
-  function sendNav() { if (active) send({ type: "nav", url: location.href, title: document.title }); }
+  // `moved` means this person just went to another page (not a reply to someone joining), so the others may follow.
+  function sendNav(moved) { if (active) send({ type: "nav", url: location.href, title: document.title, moved: !!moved }); }
+  // Whether this tab arrived on a new page since the last one the party saw. Kept across page loads.
+  function arrived() {
+    let moved = false;
+    try {
+      const key = pageKey(new URL(location.href)), last = sessionStorage.getItem("watchsync-page");
+      moved = !!last && last !== key;
+      sessionStorage.setItem("watchsync-page", key);
+    } catch {}
+    return moved;
+  }
   // Hosts the extension runs on, read from manifest.json's content_scripts so
   // the list can't drift. "*://*.netflix.com/*" -> any netflix.com subdomain,
   // "*://tv.apple.com/*" -> that exact host.
@@ -388,7 +409,9 @@
     const title = String(m.title || "").slice(0, 120).replace(/\s*[|\-–—]\s*(Netflix|Disney\+|Max|Hulu|Prime Video|YouTube|Peacock|Paramount\+).*$/i, "").trim();
     // When the host starts something else (the next episode, autoplay, a new title), guests go with them.
     // Only the host's own messages count: the host's side marks them, and a guest can't fake that mark.
-    if (role === "guest" && m.fromHost === true && isWatchPage(theirs) && canFollow(theirs.href)) {
+    // Who is followed: always the host. With everyone in control, also anyone who just moved to another title.
+    const leader = (role === "guest" && m.fromHost === true) || (!hostOnly && m.moved === true);
+    if (leader && isWatchPage(theirs) && canFollow(theirs.href)) {
       following = true;
       toast(`Following ${partner} to ${title || "the next video"}…`, null, null, 4000);
       setTimeout(() => { location.href = theirs.href; }, 700);
@@ -399,14 +422,37 @@
 
   function onPeer(m) {
     if (!active || !m) return;
-    if (m.type === "joined") { sendNav(); sendAd(); setTimeout(() => sendTick(true), 400); return; }
+    if (m.type === "joined") { sendNav(); sendAd(); if (role === "host") send({ type: "control", hostOnly }); setTimeout(() => sendTick(true), 400); return; }
     if (m.type === "syncreq") { if (role === "host" && syncIn()) { sendNav(); sendAd(); setTimeout(() => sendTick(true), 300); } return; }
     if (m.type === "ad") return onAd(m);
+    if (m.type === "control") { if (role === "guest" && m.fromHost === true) setHostOnly(m.hostOnly === true); return; }
     if (m.type === "play" || m.type === "pause" || m.type === "seek") applyRemote(m);
     else if (m.type === "tick") onTick(m);
     else if (m.type === "nav") onNav(m);
     else if (m.type === "chat") onChat(m);
     else if (m.type === "react") onReact(m);
+  }
+
+  // ------------------------------------------------------------ host only
+  // The host can keep play, pause, skip and changing titles to themselves. A guest who tries is put
+  // straight back on the host's spot, first from the host's last known state, then exactly by asking it.
+  const snapIn = limiter(4, 2000), putBackNote = limiter(1, 4000);
+  function setHostOnly(on) {
+    if (on === hostOnly) return;
+    hostOnly = on;
+    if (active) toast(on ? `Only ${partnerHost()} can play, pause and skip now` : "Everyone can play, pause and skip now");
+  }
+  const partnerHost = () => (partner === "Partner" ? "the host" : partner.split(/,| and /)[0].trim() || "the host");
+  function putBack() {
+    if (putBackNote()) toast(`Only ${partnerHost()} can play, pause and skip`);
+    if (lastHost && video) {
+      const target = lastHost.paused ? lastHost.t : lastHost.t + Math.max(0, (Date.now() - lastHost.at) / 1000);
+      suppress(1500);
+      if (Math.abs(video.currentTime - target) > 0.6) doSeek(target);
+      if (lastHost.paused && !video.paused) doPause();
+      if (!lastHost.paused && video.paused) doPlay();
+    }
+    if (snapIn()) send({ type: "syncreq" });
   }
 
   // ------------------------------------------------------------ ad breaks
@@ -526,6 +572,7 @@
   let lastHref = location.href;
   function activate(info) {
     active = true; role = info.role; if (info.partnerName) partner = info.partnerName;
+    if (role === "host") hostOnly = info.hostOnly === true;
     linkStatus = info.status || linkStatus;
     requests = Array.isArray(info.requests) ? info.requests : [];
     mountUI(); renderStatus(); renderRequests();
@@ -535,15 +582,16 @@
       setInterval(bind, 1000),
       setInterval(checkAd, 500),
       setInterval(() => sendTick(false), 4000),
-      setInterval(() => { if (location.href !== lastHref) { lastHref = location.href; sendNav(); } }, 1000),
+      setInterval(() => { if (location.href !== lastHref) { lastHref = location.href; sendNav(arrived()); } }, 1000),
     ];
-    bind(); sendNav();
+    bind(); sendNav(arrived());
     document.addEventListener("mousemove", showBtn, { passive: true });
     showBtn();
   }
   function deactivate() {
     active = false; timers.forEach(clearInterval); timers = [];
     off.splice(0).forEach(f => f()); video = null;
+    hostOnly = false; lastHost = null;
     myAd = false; held = false; wasBusy = false; adMisses = 0; adsBy.clear(); adIgnored.clear(); adKey = "";
     hostEl.remove();
     document.removeEventListener("mousemove", showBtn);
@@ -556,6 +604,7 @@
     if (m.type === "activate") activate(m);
     else if (m.type === "deactivate") deactivate();
     else if (m.type === "peer") onPeer(m.msg);
+    else if (m.type === "control") { if (active && role === "host") { hostOnly = m.hostOnly === true; send({ type: "control", hostOnly }); toast(hostOnly ? "Only you can play, pause and skip now" : "Everyone can play, pause and skip now"); } }
     else if (m.type === "status") {
       const was = linkStatus; linkStatus = m.status; if (m.partnerName) partner = m.partnerName;
       requests = Array.isArray(m.requests) ? m.requests : [];

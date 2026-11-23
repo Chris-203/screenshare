@@ -186,6 +186,7 @@
   </div>
   <div class="opts">
     <label><input type="checkbox" id="waitOpt" checked> Pause for everyone if someone is buffering</label>
+    <label><input type="checkbox" id="ctrlOpt"> Only I can play, pause and skip</label>
     <span id="syncInfo"></span>
   </div>
 </section>
@@ -422,7 +423,7 @@
 
     // Shared state, mirrored to every viewer.
     // t = media time at host-clock instant `at`; viewers extrapolate from it.
-    const S = { v: 0, kind: null, src: null, name: null, size: 0, title: "", paused: true, t: 0, at: Date.now(), dur: 0 };
+    const S = { v: 0, kind: null, src: null, name: null, size: 0, title: "", paused: true, t: 0, at: Date.now(), dur: 0, hostOnly: false };
     let A = null;                 // current adapter
     let stream = null;            // captureStream() for local files
     let autoPaused = false;
@@ -523,6 +524,7 @@
       A = htmlAdapter(hv, hooks);
       pushState();
     }
+    $("ctrlOpt").onchange = () => { S.hostOnly = $("ctrlOpt").checked; sync(); };
     $("ytForm").onsubmit = e => { e.preventDefault(); loadYouTube($("ytInput").value.trim()); };
     $("urlForm").onsubmit = e => { e.preventDefault(); loadUrl($("urlInput").value.trim()); };
     $("fileInput").onchange = e => { const f = e.target.files[0]; if (f) loadFile(f); e.target.value = ""; };
@@ -563,6 +565,8 @@
     // ---- commands from viewers
     function onCmd(c) {
       if (!A) return;
+      // Host only: the viewer's player is put straight back to the host's spot by the state it gets now.
+      if (S.hostOnly) return sync();
       if (c.action === "play") { autoPaused = false; if (typeof c.t === "number" && Math.abs(A.time() - c.t) > 0.3) A.seek(c.t); A.play(); }
       if (c.action === "pause") { A.pause(); if (typeof c.t === "number" && Math.abs(A.time() - c.t) > 0.3) A.seek(c.t); }
       if (c.action === "seek") { A.seek(c.t); }
@@ -732,8 +736,11 @@
     setInterval(() => { bestRtt *= 1.05; ping(); }, 5000);
 
     // ---- sending commands
+    const hostOnlyNote = limiter(1, 4000);
     function cmd(action, t) {
       if (!conn || !conn.open) return;
+      // Host only: nothing is sent, and the sync loop puts the player back where the host is.
+      if (S && S.hostOnly) { if (hostOnlyNote()) toast(`Only ${HOST_NAME} can play, pause and skip`); lastTick = null; return; }
       conn.send({ type: "cmd", action, t });
       if (S) {
         if (action === "play") S.paused = false;

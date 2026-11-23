@@ -19,7 +19,8 @@ const COMMANDS = new Set(["start", "join", "bindTab", "leave"]);
 const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(36).padStart(2, "0")).join("");
 
 // `requests` is the host's list of people waiting for Allow / Deny: [{ id, name }].
-const IDLE = { party: null, tabId: null, status: "idle", partnerName: null, requests: [] };
+// `hostOnly`: the host keeps play, pause, skip and changing titles to themselves.
+const IDLE = { party: null, tabId: null, status: "idle", partnerName: null, requests: [], hostOnly: false };
 async function readState() {
   const { ws } = await chrome.storage.session.get("ws");
   return ws || { ...IDLE };
@@ -60,7 +61,7 @@ async function activateTab(tabId) {
   if (!s.party) return false;
   if (s.tabId != null && s.tabId !== tabId) await toTab({ type: "deactivate" }, s.tabId);
   await setState({ tabId });
-  return toTab({ type: "activate", role: s.party.role, partnerName: s.partnerName, status: s.status, requests: s.requests || [] }, tabId);
+  return toTab({ type: "activate", role: s.party.role, partnerName: s.partnerName, status: s.status, requests: s.requests || [], hostOnly: !!s.hostOnly }, tabId);
 }
 
 async function handle(m, sender) {
@@ -76,7 +77,7 @@ async function handle(m, sender) {
     case "join": {
       // `id` makes each guest's peer ID its own, so several guests can be in one party.
       const party = { code: m.cmd === "start" ? newCode() : m.code, role: m.cmd === "start" ? "host" : "guest", name: m.name || (m.cmd === "start" ? "Chris" : "Partner"), id: newId() };
-      await setState({ party, status: "connecting", partnerName: null, requests: [] });
+      await setState({ party, status: "connecting", partnerName: null, requests: [], hostOnly: false });
       const ok = await activateTab(m.tabId);
       if (!ok) { await setState({ party: null, tabId: null, status: "idle" }); return { ok: false, error: "Open Netflix, Disney+, Max, Hulu, Prime Video or another supported site in this tab first, then try again." }; }
       await ensureOffscreen();
@@ -93,7 +94,7 @@ async function handle(m, sender) {
     case "leave":
       await toOffscreen({ cmd: "close" });
       await toTab({ type: "deactivate" });
-      await setState({ party: null, tabId: null, status: "idle", partnerName: null, requests: [] });
+      await setState({ party: null, tabId: null, status: "idle", partnerName: null, requests: [], hostOnly: false });
       try { await chrome.offscreen.closeDocument(); } catch {}
       chrome.action.setBadgeText({ text: "" });
       return { ok: true };
@@ -105,10 +106,19 @@ async function handle(m, sender) {
       await toOffscreen({ cmd: "decide", id: m.id, allow: !!m.allow });
       return { ok: true };
 
+    // ---------- from the popup: who may control playback
+    case "setControl": {
+      if (!s.party || s.party.role !== "host") return { ok: false };
+      const hostOnly = !!m.hostOnly;
+      await setState({ hostOnly });
+      await toTab({ type: "control", hostOnly });
+      return { ok: true };
+    }
+
     // ---------- from content scripts
     case "hello": {
       const active = !!s.party && sender.tab && sender.tab.id === s.tabId;
-      return active ? { active, role: s.party.role, partnerName: s.partnerName, status: s.status, requests: s.requests || [] } : { active: false };
+      return active ? { active, role: s.party.role, partnerName: s.partnerName, status: s.status, requests: s.requests || [], hostOnly: !!s.hostOnly } : { active: false };
     }
     case "send":
       if (!s.party || !sender.tab || sender.tab.id !== s.tabId) return;
