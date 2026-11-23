@@ -11,7 +11,7 @@ const MAX_GUESTS = 8;      // people let in, besides the host
 const MAX_PENDING = 5;     // people waiting for Allow / Deny
 const STALE_MS = 12000;    // pings arrive every 5s, so this is two missed in a row
 // Message types that belong to this file. They are never passed on from one guest to another.
-const RESERVED = new Set(["hello", "pending", "denied", "busy", "roster", "ping", "pong", "tick", "joined"]);
+const RESERVED = new Set(["hello", "pending", "denied", "busy", "roster", "ping", "pong", "tick", "joined", "rename", "hostname"]);
 
 let peer = null, party = null, retryTimer = null;
 
@@ -163,6 +163,14 @@ function onGuest(c) {
     // Nothing else from a guest is read until the host has pressed Allow.
     if (!g.ok) return;
     if (m.type === "pong") return onPong(g, m);
+    if (m.type === "rename") {
+      // A guest changed their name in the chat. Everyone's list and the host's tab follow.
+      if (Date.now() - (g.renamedAt || 0) < 2000) return;
+      const name = cleanName(m.name);
+      if (name === g.name) return;
+      g.renamedAt = Date.now(); g.name = name; sendRoster(); hostStatus();
+      return;
+    }
     if (RESERVED.has(m.type)) return;
     if (typeof m.at === "number") m.at -= g.offset; // their clock → ours
     m.from = g.name;                                // set here, so a guest can't speak as someone else
@@ -208,6 +216,11 @@ function attach(c) {
       return;
     }
     if (!welcomed) return;
+    if (m.type === "hostname") {
+      hostName = cleanName(m.name);
+      status("connected", { partnerName: guestLabel() });
+      return;
+    }
     if (m.type === "roster") {
       others = (Array.isArray(m.names) ? m.names : []).slice(0, MAX_GUESTS).map(cleanName);
       status("connected", { partnerName: guestLabel() });
@@ -235,8 +248,17 @@ function send(msg) {
   for (const g of guests.values()) if (g.ok) sendTo(g.conn, msg);
 }
 
+// Your own new name, from the chat panel. The host tells every guest; a guest tells the host, which tells the rest.
+function rename(name) {
+  if (!party) return;
+  party.name = cleanName(name);
+  if (party.role === "guest") { if (welcomed) sendTo(conn, { type: "rename", name: party.name }); return; }
+  for (const g of guests.values()) if (g.ok) sendTo(g.conn, { type: "hostname", name: party.name });
+}
+
 chrome.runtime.onMessage.addListener(m => {
   if (!m || m.to !== "off") return;
+  if (m.cmd === "rename") return rename(m.name);
   if (m.cmd === "open") {
     const same = party && peer && !peer.destroyed && party.code === m.party.code && party.role === m.party.role;
     if (!same) open(m.party);

@@ -255,6 +255,10 @@ async function partySuite(hub, web) {
     await expectPlayingInSync("party", "Viewer reloads and rejoins mid-playback", host, viewer, { settle: 5000 });
 
     await hostOnly("party", "Viewer", host, viewer, on => on ? host.check("#ctrlOpt") : host.uncheck("#ctrlOpt"));
+
+    // Chat: names, avatars, "is typing…" and the unread count, both ways.
+    const dom = page => fn => page.evaluate(fn);
+    await chatChecks("party", dom(host), dom(viewer), { host: "Chris", viewer: "Tester" });
   } finally {
     await Promise.all(browsers.map(b => b.close().catch(() => {})));
   }
@@ -359,6 +363,10 @@ async function extensionSuite(hub, web) {
 
     await hostOnly("extension", "Guest", host.page, guest.page, on => host.once({ cmd: "setControl", hostOnly: on }));
 
+    // Chat: the same checks through the extension's on-page panel, plus a rename reaching the host's party list.
+    await chatChecks("extension", await shadow(host.page), await shadow(guest.page), { host: "Host", viewer: "Guest" },
+      async () => (await host.once({ cmd: "status" })).partnerName);
+
     // Invite link: the guest leaves, the host moves on to another title and copies the link,
     // and the guest opening it lands on that title and joins by itself.
     await guest.once({ cmd: "leave" });
@@ -394,6 +402,81 @@ async function extensionSuite(hub, web) {
   } finally {
     await Promise.all(sides.map(s => s.ctx.close().catch(() => {})));
     rmSync(work, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------- chat
+// Runs a function against the extension's closed shadow root. Page scripts can't reach it, so this
+// goes through the DevTools protocol, which can. `fn` gets an object with the same $ (by id) as content.js.
+async function shadow(page) {
+  const cdp = await page.context().newCDPSession(page);
+  return async fn => {
+    const { root } = await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
+    const find = n => { if (!n) return null; for (const r of n.shadowRoots || []) if (r.shadowRootType === "closed") return r; for (const c of n.children || []) { const f = find(c); if (f) return f; } return null; };
+    const sr = find(root);
+    if (!sr) throw new Error("no Watch Sync panel on the page");
+    const { object } = await cdp.send("DOM.resolveNode", { backendNodeId: sr.backendNodeId });
+    const src = `function () { const document = { getElementById: id => this.getElementById(id) }; return (${fn.toString()})(); }`;
+    const r = await cdp.send("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: src, returnByValue: true, awaitPromise: true });
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
+    return r.result.value;
+  };
+}
+
+// The same chat checks for the page and the extension. Element ids differ, so each step looks both up.
+// `run(page)(fn)` runs fn where `document.getElementById` finds that tool's chat elements.
+async function chatChecks(suite, host, viewer, names, partnerName) {
+  const ui = () => {
+    const $ = id => document.getElementById(id);
+    const pick = (...ids) => ids.map($).find(Boolean);
+    return {
+      input: pick("chatInput", "cin"), form: pick("chatForm", "cform"), log: pick("chatLog", "log"), typing: $("typing"),
+      badge: pick("chatBadge", "badge"), profBtn: pick("profBtn", "pbtn"), profName: pick("profName", "pname"), avs: $("avs"), close: pick("chatClose", "cclose"),
+    };
+  };
+  const helpers = `const U = (${ui.toString()})();
+    const visible = el => !!el && !el.hidden && !el.classList.contains("hidden");
+    const last = () => { const r = U.log.lastElementChild; return r ? { who: r.querySelector(".who").textContent, av: r.querySelector(".av").textContent, txt: r.querySelector(".txt").textContent } : null; };`;
+  const on = (side, body) => side(new Function(`${helpers} ${body}`));
+  const type = (side, text) => on(side, `U.input.value = ${JSON.stringify(text)}; U.input.dispatchEvent(new Event("input", { bubbles: true }));`);
+  const submit = side => on(side, `U.form.requestSubmit();`);
+  const typingText = side => on(side, `return visible(U.typing) ? U.typing.textContent : "";`);
+  const badge = side => on(side, `return visible(U.badge) ? U.badge.textContent : "";`);
+  const lastMsg = side => on(side, `return last();`);
+  const soft = async (what, fn, ms = 8000) => { try { return await until(what, fn, ms); } catch { return null; } };
+
+  // Both chats closed. The viewer picks the fox picture, starts typing, then sends.
+  await on(host, `if (U.close) U.close.click();`); await on(viewer, `if (U.close) U.close.click();`);
+  await on(viewer, `U.profBtn.click(); [...U.avs.querySelectorAll("button")].find(b => b.textContent === "🦊").click(); U.profBtn.click();`);
+  await type(viewer, "hel");
+  const seen = await soft("the host to see the typing note", async () => { const t = await typingText(host); return t && t; });
+  check(suite, `Host sees "${names.viewer} is typing…"`, seen === `${names.viewer} is typing…`, seen || "nothing shown");
+  await type(viewer, "hello there"); await submit(viewer);
+  const got = await soft("the message to reach the host", async () => { const m = await lastMsg(host); return m && m.txt === "hello there" && m; });
+  check(suite, "Host sees the sender's name and picture", !!got && got.who.startsWith(names.viewer + " ·") && got.av === "🦊", got ? `${got.who} ${got.av}` : "no message");
+  check(suite, "Typing note clears when the message lands", (await typingText(host)) === "");
+  const b1 = await badge(host);
+  check(suite, "Closed chat shows an unread count", b1 === "1", b1 || "no badge");
+
+  // The host answers with the initials avatar. The viewer's own row reads "You".
+  await type(host, "hi!"); await submit(host);
+  const back = await soft("the reply to reach the viewer", async () => { const m = await lastMsg(viewer); return m && m.txt === "hi!" && m; });
+  const initial = names.host[0].toUpperCase();
+  check(suite, "Viewer sees the host's name and initials", !!back && back.who.startsWith(names.host + " ·") && back.av === initial, back ? `${back.who} ${back.av}` : "no message");
+  const b2 = await badge(viewer);
+  check(suite, "Viewer's closed chat counts the reply", b2 === "1", b2 || "no badge");
+  await on(viewer, `document.getElementById("chatBtn") ? document.getElementById("chatBtn").click() : document.getElementById("cbtn").click();`);
+  check(suite, "Opening the chat clears the count", (await badge(viewer)) === "");
+
+  // The viewer renames themselves in the chat panel; their next message carries the new name.
+  await on(viewer, `U.profBtn.click(); U.profName.value = "Sam"; U.profName.dispatchEvent(new Event("change", { bubbles: true })); U.profBtn.click();`);
+  await sleep(1500);
+  await type(viewer, "new name"); await submit(viewer);
+  const renamed = await soft("the renamed message to reach the host", async () => { const m = await lastMsg(host); return m && m.txt === "new name" && m; });
+  check(suite, "A new name shows on the next message", !!renamed && renamed.who.startsWith("Sam ·"), renamed ? renamed.who : "no message");
+  if (partnerName) {
+    const list = await soft("the host's party list to show the new name", async () => { const n = await partnerName(); return n === "Sam" && n; });
+    check(suite, "The host's party list shows the new name", list === "Sam", list || "unchanged");
   }
 }
 
