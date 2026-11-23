@@ -219,6 +219,8 @@ async function scenario(suite, host, viewer, hub, labels) {
 }
 
 const LAUNCH_ARGS = ["--autoplay-policy=no-user-gesture-required", "--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"];
+// Chromium's built-in test camera and mic, allowed without asking. Only the extension suite uses them.
+const MEDIA_ARGS = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--disable-features=WebRtcHideLocalIpsWithMdns"];
 const watchErrors = (page, who) => page.on("pageerror", e => console.log(`  [${who} page error] ${e.message}`));
 
 // ---------------------------------------------------------------- suite: party.html
@@ -294,7 +296,7 @@ async function extensionSuite(hub, web) {
     // The invite page is answered locally too, from this repo's sync.html.
     const ctx = await chromium.launchPersistentContext(join(work, name), {
       channel: "chromium", headless: true,
-      args: [...LAUNCH_ARGS, `--disable-extensions-except=${ext}`, `--load-extension=${ext}`],
+      args: [...LAUNCH_ARGS, ...MEDIA_ARGS, `--disable-extensions-except=${ext}`, `--load-extension=${ext}`],
     });
     await ctx.route("https://www.youtube.com/**", serve);
     await ctx.route("https://chris-203.github.io/**", serveInvite);
@@ -313,7 +315,7 @@ async function extensionSuite(hub, web) {
     }, cmd);
     // A command sent from a fresh popup page, for after the first one is closed.
     const once = async c => { const p = await ctx.newPage(); await p.goto(`chrome-extension://${id}/popup.html`); const r = await p.evaluate(c => chrome.runtime.sendMessage({ to: "bg", ...c }), c); await p.close(); return r; };
-    return { ctx, page, popup, bg, worker, once };
+    return { ctx, page, popup, bg, worker, once, id };
   };
 
   const sides = [];
@@ -366,6 +368,8 @@ async function extensionSuite(hub, web) {
     // Chat: the same checks through the extension's on-page panel, plus a rename reaching the host's party list.
     await chatChecks("extension", await shadow(host.page), await shadow(guest.page), { host: "Host", viewer: "Guest" },
       async () => (await host.once({ cmd: "status" })).partnerName);
+
+    await videoChat(host, guest);
 
     // Invite link: the guest leaves, the host moves on to another title and copies the link,
     // and the guest opening it lands on that title and joins by itself.
@@ -534,6 +538,46 @@ async function adBreak(who, inAd, hostPage, guestPage) {
   check("extension", `${who}'s ad seeks stay on ${who === "Host" ? "the host" : "the guest"}`, !!(w && w2 && w2.paused && Math.abs(w2.t - w.t) < 0.3), w2 ? `other side at ${w2.t.toFixed(2)} s` : "no video");
   await setAd(false);
   await expectPlayingInSync("extension", `${who}'s ad ends, both play on`, hostPage, guestPage, { settle: 5000 });
+}
+
+// ---------------------------------------------------------------- video chat (extension)
+// vc.html is opened as its own tab on each side (on a real site it sits in a frame in the party's
+// tab, which a test can't reach through the closed shadow root). Chromium's fake camera and mic
+// stand in for real ones. The signaling goes through the party connection above (the fake PeerJS);
+// the media is a real RTCPeerConnection between the two browsers.
+async function videoChat(host, guest) {
+  console.log("\nVideo chat");
+  const vc = async s => { const p = await s.ctx.newPage(); watchErrors(p, "video chat"); await p.goto(`chrome-extension://${s.id}/vc.html`); return p; };
+  // What one side sees of the other: [has a live picture, mic shown as on].
+  const remote = p => p.evaluate(() => {
+    const t = document.querySelector(".tile:not(.me)"); if (!t) return null;
+    const v = t.querySelector("video");
+    return { picture: !t.classList.contains("nocam") && v.videoWidth > 0 && v.readyState >= 2, mic: !t.classList.contains("nomic"), connecting: !!t.querySelector(".wait") };
+  });
+  const check = async (step, fn, timeout = 25000) => {
+    const t0 = Date.now();
+    try { await until(step, fn, timeout); record("extension", step, "video", NaN, "-", true, `${Date.now() - t0} ms`); }
+    catch (e) { record("extension", step, "video", NaN, "-", false, String(e.message || e).slice(0, 120)); throw new VideoStop(); }
+  };
+  class VideoStop extends Error {}   // the steps after a failed one would only time out
+  const [a, b] = [await vc(host), await vc(guest)];
+  try {
+    await check("Both open video chat, nothing captured", async () => {
+      const [ra, rb] = [await remote(a), await remote(b)];
+      return ra && rb && !ra.picture && !rb.picture && !ra.mic && !rb.mic;
+    });
+    await a.click("#cam"); await a.click("#mic");
+    await check("Host turns camera and mic on, guest sees it", async () => { const r = await remote(b); return r && r.picture && r.mic && !r.connecting; });
+    await b.click("#cam");
+    await check("Guest turns camera on, host sees it", async () => { const r = await remote(a); return r && r.picture && !r.mic; });
+    await a.click("#cam");
+    await check("Host turns camera off, guest sees that", async () => { const r = await remote(b); return r && !r.picture && r.mic; });
+    await a.click("#cam");
+    await check("Host turns camera back on", async () => { const r = await remote(b); return r && r.picture; });
+    await b.close();
+    await check("Guest closes video chat, host drops the tile", async () => !(await a.$(".tile:not(.me)")));
+  } catch (e) { if (!(e instanceof VideoStop)) throw e; }
+  await a.close().catch(() => {}); await b.close().catch(() => {});
 }
 
 // ---------------------------------------------------------------- run

@@ -67,6 +67,21 @@ if (m !== null) {
     for (const [size, icon] of Object.entries(m.icons ?? {}))
       if (!has(icon)) bad(`icons.${size} not found: ${JSON.stringify(icon)}`);
 
+    // vc.html is shown in a frame on the same sites the content script runs on, so the two lists must match.
+    if (m.web_accessible_resources != null) {
+      if (!Array.isArray(m.web_accessible_resources)) bad("web_accessible_resources must be an array");
+      else m.web_accessible_resources.forEach((w, i) => {
+        const at = `web_accessible_resources[${i}]`;
+        if (!Array.isArray(w.resources) || !w.resources.length) bad(`${at}.resources must be a non-empty array`);
+        else for (const f of w.resources) if (!has(f)) bad(`${at}.resources file not found: ${JSON.stringify(f)}`);
+        if (!Array.isArray(w.matches) || !w.matches.length) bad(`${at}.matches must be a non-empty array`);
+        else for (const p of w.matches) if (!str(p) || !MATCH.test(p)) bad(`${at}.matches: invalid match pattern ${JSON.stringify(p)}`);
+      });
+      const cs = Array.isArray(m.content_scripts) && m.content_scripts[0] && m.content_scripts[0].matches;
+      const war = Array.isArray(m.web_accessible_resources) && m.web_accessible_resources[0] && m.web_accessible_resources[0].matches;
+      if (Array.isArray(cs) && Array.isArray(war) && JSON.stringify([...cs].sort()) !== JSON.stringify([...war].sort()))
+        bad("web_accessible_resources[0].matches must list the same sites as content_scripts[0].matches");
+    }
     if (m.content_scripts != null && !Array.isArray(m.content_scripts)) bad("content_scripts must be an array");
     (Array.isArray(m.content_scripts) ? m.content_scripts : []).forEach((cs, i) => {
       const at = `content_scripts[${i}]`;

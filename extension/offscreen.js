@@ -11,7 +11,7 @@ const MAX_GUESTS = 8;      // people let in, besides the host
 const MAX_PENDING = 5;     // people waiting for Allow / Deny
 const STALE_MS = 12000;    // pings arrive every 5s, so this is two missed in a row
 // Message types that belong to this file. They are never passed on from one guest to another.
-const RESERVED = new Set(["hello", "pending", "denied", "busy", "roster", "ping", "pong", "tick", "joined", "rename", "hostname"]);
+const RESERVED = new Set(["hello", "pending", "denied", "busy", "roster", "ping", "pong", "tick", "joined", "rename", "hostname", "vc"]);
 
 let peer = null, party = null, retryTimer = null;
 
@@ -35,6 +35,26 @@ const listNames = a => a.length < 2 ? (a[0] || "") : a.length <= 3 ? `${a.slice(
 const sendTo = (c, msg) => { if (c && c.open) { try { c.send(msg); } catch {} } };
 const allowed = () => [...guests.values()].filter(g => g.ok);
 
+// ---- video chat signaling for vc.js: offers, answers and ICE candidates for the camera
+// connections ride on the party's own connections, so only people the host let in can reach you.
+// `to` is a member id ("host" or a guest's peer ID) or "*" for everyone. The host stamps `from`
+// and `name` on everything it passes on, so nobody can speak as someone else.
+const VC_MAX = 24000; // characters of JSON; an offer is a few thousand
+const vcOk = d => { try { return !!d && typeof d === "object" && typeof d.t === "string" && JSON.stringify(d).length <= VC_MAX; } catch { return false; } };
+const toVc = msg => chrome.runtime.sendMessage(Object.assign({ to: "vc" }, msg)).catch(() => {});
+const myVcId = () => !party ? null : party.role === "host" ? "host" : peer && peer.id;
+function relayVc(from, name, to, d) {
+  if (!party || party.role !== "host" || typeof to !== "string" || !vcOk(d)) return;
+  if (from !== "host" && (to === "host" || to === "*")) toVc({ from, name, d });
+  if (to === "host") return;
+  for (const [id, x] of guests) if (x.ok && id !== from && (to === "*" || to === id)) sendTo(x.conn, { type: "vc", from, name, d });
+}
+function sendVc(to, d) {
+  if (!party) return;
+  if (party.role === "host") relayVc("host", party.name, to, d);
+  else if (welcomed && typeof to === "string" && vcOk(d)) sendTo(conn, { type: "vc", to, d });
+}
+
 function close() {
   clearTimeout(retryTimer);
   const old = [...guests.values()];
@@ -42,6 +62,7 @@ function close() {
   old.forEach(g => { clearTimeout(g.joinTimer); try { g.conn.close(); } catch {} });
   if (conn) { try { conn.close(); } catch {} conn = null; }
   welcomed = false; others = [];
+  toVc({ reset: true });
   if (peer) { try { peer.destroy(); } catch {} peer = null; }
 }
 
@@ -52,7 +73,7 @@ function open(p, attempt = 0) {
   party = p;
   peer = new Peer(p.role === "host" ? hostId() : guestId(), { debug: 1, config: ICE.config });
   peer.on("open", () => {
-    if (p.role === "host") hostStatus(); else { status("connecting"); ICE.ready().then(dial); }
+    if (p.role === "host") { hostStatus(); toVc({ up: true }); } else { status("connecting"); ICE.ready().then(dial); }
   });
   peer.on("connection", c => { if (party && party.role === "host") onGuest(c); });
   peer.on("disconnected", () => { if (peer && !peer.destroyed) peer.reconnect(); });
@@ -110,7 +131,7 @@ function forget(g, last) {
   const had = guests.get(g.conn.peer) === g;
   if (had) guests.delete(g.conn.peer);
   hangUp(g.conn, last);
-  if (had) { if (g.ok) sendRoster(); hostStatus(); }
+  if (had) { if (g.ok) { sendRoster(); relayVc(g.conn.peer, g.name, "*", { t: "bye" }); } hostStatus(); }
 }
 function admit(g, p) {
   if (!g.conn.open || guests.get(g.conn.peer) !== g) return hostStatus();
@@ -171,6 +192,7 @@ function onGuest(c) {
       g.renamedAt = Date.now(); g.name = name; sendRoster(); hostStatus();
       return;
     }
+    if (m.type === "vc") return relayVc(c.peer, g.name, m.to, m.d);
     if (RESERVED.has(m.type)) return;
     if (typeof m.at === "number") m.at -= g.offset; // their clock → ours
     m.from = g.name;                                // set here, so a guest can't speak as someone else
@@ -211,6 +233,7 @@ function attach(c) {
       welcomed = true; hostName = cleanName(m.name);
       if (typeof m.pass === "string") pass = m.pass.slice(0, 64);
       status("connected", { partnerName: guestLabel() });
+      toVc({ up: true });
       // Let the clock samples land before the tab exchanges state.
       if (!joinTimer) joinTimer = setTimeout(() => { if (conn === c) toBg({ type: "peerMsg", msg: { type: "joined" } }); }, 900);
       return;
@@ -226,6 +249,7 @@ function attach(c) {
       status("connected", { partnerName: guestLabel() });
       return;
     }
+    if (m.type === "vc") { if (typeof m.from === "string" && vcOk(m.d)) toVc({ from: m.from.slice(0, 100), name: cleanName(m.name), d: m.d }); return; }
     if (typeof m.at === "number") m.at -= offset; // host's clock → ours
     toBg({ type: "peerMsg", msg: m });
   });
@@ -233,6 +257,7 @@ function attach(c) {
     clearTimeout(joinTimer);
     if (conn !== c) return;
     conn = null; welcomed = false;
+    toVc({ reset: true });
     if (!party || denied) return; // no automatic retry after a no
     if (!refused) status("reconnecting");
     // Keep trying after "full" too, more slowly: a seat frees up when someone leaves.
@@ -256,9 +281,12 @@ function rename(name) {
   for (const g of guests.values()) if (g.ok) sendTo(g.conn, { type: "hostname", name: party.name });
 }
 
-chrome.runtime.onMessage.addListener(m => {
+chrome.runtime.onMessage.addListener((m, _sender, reply) => {
   if (!m || m.to !== "off") return;
   if (m.cmd === "rename") return rename(m.name);
+  // From vc.js on the party's tab.
+  if (m.cmd === "vcHello") { reply({ id: myVcId(), name: party ? party.name : "", up: !!party && (party.role === "host" || welcomed) }); return; }
+  if (m.cmd === "vc") return sendVc(m.dest, m.d);
   if (m.cmd === "open") {
     const same = party && peer && !peer.destroyed && party.code === m.party.code && party.role === m.party.role;
     if (!same) open(m.party);
