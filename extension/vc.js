@@ -33,7 +33,11 @@ const note = (text, btn, onClick) => {
 // ------------------------------------------------------------ tiles
 function makeTile(name, mine) {
   const tile = document.createElement("div"); tile.className = "tile nocam nomic" + (mine ? " me" : "");
-  const video = document.createElement("video"); video.autoplay = true; video.playsInline = true; video.muted = !!mine;
+  // The picture plays muted; the other person's voice plays in its own audio element. A <video> whose
+  // video track has no frames yet (camera off) never starts, and would hold back the sound with it.
+  const video = document.createElement("video"); video.autoplay = true; video.playsInline = true; video.muted = true;
+  const audio = mine ? null : document.createElement("audio");
+  if (audio) audio.autoplay = true;
   const av = document.createElement("div"); av.className = "av";
   const letter = document.createElement("span"); av.append(letter);
   const label = document.createElement("div"); label.className = "name";
@@ -42,11 +46,12 @@ function makeTile(name, mine) {
   // Only used as separate bubbles: a corner to resize this bubble by.
   const rz = document.createElement("div"); rz.className = "rz"; rz.title = "Drag to resize";
   tile.append(video, av, label, rz);
+  if (audio) tile.append(audio);
   // With the camera off, the circle shows the first letter of the person's name (yours too, not "Y" for "You").
   const setLetter = n => { letter.textContent = (Array.from(cleanName(n))[0] || "?").toUpperCase(); };
   const setName = n => { text.textContent = n; setLetter(n); };
   setName(name);
-  return { tile, video, setName, setLetter, setWait: on => {
+  return { tile, video, audio, setName, setLetter, setWait: on => {
     let w = tile.querySelector(".wait");
     if (on && !w) { w = document.createElement("div"); w.className = "wait"; w.textContent = "Connecting…"; tile.append(w); }
     if (!on && w) w.remove();
@@ -68,6 +73,10 @@ function renderMine() {
 }
 function renderPeer(p) {
   p.tile.tile.classList.toggle("nocam", !p.state.cam || !p.stream.getVideoTracks().length);
+  // Chrome may pause a muted video while it is hidden; start the picture again when it shows.
+  if (p.state.cam && p.tile.video.paused && p.tile.video.srcObject) p.tile.video.play().catch(() => {});
+  // Their mic just came on: make sure the sound is playing (or ask for a click).
+  if (p.state.mic) hear(p);
   p.tile.tile.classList.toggle("nomic", !p.state.mic);
   p.tile.setName(p.name);
   fit();
@@ -89,19 +98,25 @@ window.addEventListener("resize", fit);
 document.body.classList.add("hint");
 setTimeout(() => document.body.classList.remove("hint"), 4000);
 
-function play(video) {
-  video.play().catch(() => {
+// Play one person's sound. Chrome only allows sound after a click in this frame (or on the page, when
+// it lets the frame share that), so when it says no, ask for one click and try everyone again then.
+function hear(p) {
+  const a = p.tile.audio;
+  if (!a || !a.srcObject || !a.paused) return;
+  a.play().catch(e => {
+    if (e && e.name === "AbortError") return;      // a newer play() took over
     if (blockedAudio) return;
     blockedAudio = true;
-    note("Click here to hear everyone.");
+    note("🔈 Click here to hear everyone.");
   });
 }
-document.addEventListener("click", () => {
+const unblock = () => {
   if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
-  if (!blockedAudio) return;
-  blockedAudio = false; note("");
-  peers.forEach(p => play(p.tile.video));
-}, true);
+  if (blockedAudio) { blockedAudio = false; note(""); }
+  peers.forEach(hear);
+};
+document.addEventListener("click", unblock, true);
+document.addEventListener("keydown", unblock, true);
 
 // Green outline on whoever is talking.
 let audioCtx = null;
@@ -145,6 +160,7 @@ function drop(id) {
   peers.delete(id);
   if (p.pc) { try { p.pc.close(); } catch {} }
   if (p.tile.stopMeter) p.tile.stopMeter();
+  if (p.tile.audio) { p.tile.audio.pause(); p.tile.audio.srcObject = null; }
   p.tile.tile.remove();
   fit();
 }
@@ -165,12 +181,18 @@ function makePc(p, offerer) {
   pc.onicecandidate = e => { if (e.candidate && p.pc === pc) sig(p.id, { t: "ice", c: e.candidate.toJSON() }); };
   pc.ontrack = e => {
     if (p.pc !== pc) return;
-    p.stream.getTracks().filter(t => t.kind === e.track.kind && t !== e.track).forEach(t => p.stream.removeTrack(t));
-    if (!p.stream.getTracks().includes(e.track)) p.stream.addTrack(e.track);
-    if (e.track.kind === "audio") { if (p.tile.stopMeter) p.tile.stopMeter(); watchTalk(p.tile, new MediaStream([e.track])); }
-    // Firefox and Chrome both need a fresh srcObject to pick up a track added later.
-    p.tile.video.srcObject = p.stream;
-    play(p.tile.video);
+    if (e.track.kind === "audio") {
+      if (p.tile.stopMeter) p.tile.stopMeter();
+      watchTalk(p.tile, new MediaStream([e.track]));
+      p.tile.audio.srcObject = new MediaStream([e.track]);
+      hear(p);
+    } else if (e.track.kind === "video") {
+      p.stream.getVideoTracks().filter(t => t !== e.track).forEach(t => p.stream.removeTrack(t));
+      if (!p.stream.getTracks().includes(e.track)) p.stream.addTrack(e.track);
+      // Firefox and Chrome both need a fresh srcObject to pick up a track added later.
+      p.tile.video.srcObject = p.stream;
+      p.tile.video.play().catch(() => {});
+    }
     renderPeer(p);
   };
   pc.onconnectionstatechange = () => {
