@@ -131,6 +131,7 @@ async function handle(m, sender) {
       await toOffscreen({ cmd: "close" });
       await toTab({ type: "deactivate" });
       await setState({ party: null, tabId: null, status: "idle", partnerName: null, requests: [], hostOnly: false, pendingJoin: null });
+      await chrome.storage.session.remove(["vc", "vcAllowed"]); // video chat starts with camera and mic off next time
       try { await chrome.offscreen.closeDocument(); } catch {}
       chrome.action.setBadgeText({ text: "" });
       return { ok: true };

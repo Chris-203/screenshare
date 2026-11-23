@@ -112,12 +112,32 @@
       .panel form button { all: unset; cursor: pointer; background: #a78bfa; color: #140b2e; font-weight: 600; padding: 9px 14px; border-radius: 10px; }
       .floats { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; overflow: hidden; pointer-events: none; }
       .float { position: absolute; bottom: 90px; font-size: 40px; line-height: 1; animation: rise 2.4s ease-out forwards; }
+      .vcbtn { all: unset; box-sizing: border-box; position: fixed; right: 14px; top: calc(50% + 54px); transform: translateY(-50%); width: 44px; height: 44px;
+        display: grid; place-items: center; cursor: pointer; font-size: 19px; line-height: 1; border-radius: 50%;
+        background: rgba(18,19,23,.86); border: 1px solid #2a2d35; backdrop-filter: blur(10px); transition: opacity .4s; }
+      .vcbtn.dim { opacity: 0; }
+      .vcbtn:focus-visible { outline: 2px solid #a78bfa; }
+      .vc { position: fixed; left: 18px; top: 18px; display: flex; flex-direction: column; border-radius: 14px; overflow: hidden;
+        background: #0e0f12; border: 1px solid #2a2d35; box-shadow: 0 6px 24px rgba(0,0,0,.45); }
+      .vchead { display: flex; align-items: center; gap: 2px; padding: 4px 4px 4px 10px; cursor: grab; touch-action: none; user-select: none;
+        font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #9095a1; border-bottom: 1px solid #2a2d35; }
+      .vchead.drag { cursor: grabbing; }
+      .vchead span { flex: 1; }
+      .vchead button { all: unset; cursor: pointer; padding: 3px 7px; border-radius: 6px; font-size: 15px; line-height: 1; color: #9095a1; }
+      .vchead button:hover { color: #eceef2; background: #2a2d35; }
+      .vc iframe { display: block; border: 0; width: 168px; height: 170px; background: #0e0f12; color-scheme: dark; }
+      .vc.min iframe { height: 0; }
+      .vc.min .vchead { border-bottom: 0; }
       @keyframes rise { from { transform: translateY(0) scale(.6); opacity: 0; } 15% { transform: translateY(-6vh) scale(1.1); opacity: 1; } to { transform: translateY(-55vh) scale(1); opacity: 0; } }
     </style>
     <div class="pill dim" id="pill"><span class="dot" id="dot"></span><span id="ptxt"></span></div>
     <div class="toast" id="toast"><span id="ttxt"></span><button id="tbtn" hidden></button></div>
     <div class="reqs" id="reqs"></div>
     <div class="floats" id="floats"></div>
+    <button class="vcbtn dim" id="vbtn" title="Video chat" aria-label="Video chat">🎥</button>
+    <div class="vc" id="vc" hidden>
+      <div class="vchead" id="vchead"><span>Video chat</span><button id="vcmin" title="Hide videos" aria-label="Hide videos">–</button><button id="vcx" title="Leave video chat" aria-label="Leave video chat">×</button></div>
+    </div>
     <button class="chatbtn dim" id="cbtn" title="Chat" aria-label="Chat">💬<span class="badge" id="badge" hidden></span></button>
     <div class="panel" id="panel">
       <div class="head"><span>Chat</span><span class="hb"><button id="pbtn" title="Your name and picture" aria-label="Your name and picture"></button><button id="cclose" title="Close" aria-label="Close chat">×</button></span></div>
@@ -167,7 +187,10 @@
   }
   function mountUI() {
     const parent = document.fullscreenElement && document.fullscreenElement.tagName !== "VIDEO" ? document.fullscreenElement : document.documentElement;
-    if (hostEl.parentNode !== parent) parent.appendChild(hostEl);
+    if (hostEl.parentNode === parent) return;
+    // moveBefore keeps the video chat frame running through the move; appendChild would reload it.
+    if (parent.moveBefore && hostEl.isConnected) { try { parent.moveBefore(hostEl, null); return; } catch {} }
+    parent.appendChild(hostEl);
   }
   document.addEventListener("fullscreenchange", () => active && mountUI());
 
@@ -186,8 +209,8 @@
   let unread = 0, btnT;
   const chatOpen = () => $("panel").classList.contains("open");
   function showBtn() {
-    $("cbtn").classList.remove("dim"); clearTimeout(btnT);
-    btnT = setTimeout(() => { if (!unread) $("cbtn").classList.add("dim"); }, 3000);
+    $("cbtn").classList.remove("dim"); $("vbtn").classList.remove("dim"); clearTimeout(btnT);
+    btnT = setTimeout(() => { if (!unread) $("cbtn").classList.add("dim"); $("vbtn").classList.add("dim"); }, 3000);
   }
   function setUnread(n) { unread = n; $("badge").hidden = !n; $("badge").textContent = n > 9 ? "9+" : String(n); if (n) showBtn(); }
   function openChat(on) {
@@ -294,6 +317,58 @@
     if (c.name) savedName = (c.name.newValue || "").slice(0, 20);
     if (c.avatar) myAv = cleanAv(c.avatar.newValue);
     if (c.name || c.avatar) renderProfile();
+  });
+
+  // ------------------------------------------------------------ video chat
+  // The tiles, camera and mic live in vc.html, an extension page shown in a frame here. The frame has
+  // the extension's own origin, so the site's scripts can't read the video, and Chrome asks for the
+  // camera and mic for Watch Sync rather than for the streaming site. It only exists while it is open.
+  let vcFrame = null, vcPos = null;
+  function openVc() {
+    const box = $("vc");
+    if (vcFrame) { box.classList.remove("min"); return; }
+    vcFrame = document.createElement("iframe");
+    // "*" because a frame's own origin isn't matched reliably for extension pages with a dynamic URL;
+    // the frame can only ever hold vc.html.
+    vcFrame.allow = "camera *; microphone *; autoplay *";
+    vcFrame.title = "Video chat";
+    vcFrame.src = chrome.runtime.getURL("vc.html");
+    box.append(vcFrame);
+    box.classList.remove("min"); box.hidden = false; $("vbtn").hidden = true;
+    if (vcPos) placeVc(vcPos.x, vcPos.y);
+  }
+  function closeVc() {
+    if (!vcFrame) return;
+    const f = vcFrame; vcFrame = null;
+    // Let it say goodbye first, so everyone drops this tile right away.
+    try { f.contentWindow.postMessage({ wsvc: "leave" }, "*"); } catch {}
+    setTimeout(() => f.remove(), 300);
+    $("vc").hidden = true; $("vbtn").hidden = false;
+  }
+  function placeVc(x, y) {
+    const box = $("vc"), r = box.getBoundingClientRect();
+    x = Math.max(0, Math.min(x, innerWidth - r.width)); y = Math.max(0, Math.min(y, innerHeight - Math.min(r.height, 40)));
+    vcPos = { x, y };
+    box.style.left = `${x}px`; box.style.top = `${y}px`;
+  }
+  $("vbtn").onclick = openVc;
+  $("vcx").onclick = closeVc;
+  $("vcmin").onclick = () => { const min = $("vc").classList.toggle("min"); $("vcmin").textContent = min ? "+" : "–"; $("vcmin").title = min ? "Show videos" : "Hide videos"; };
+  // Drag by the bar. Pointer capture keeps the drag going when the pointer passes over the frame.
+  $("vchead").addEventListener("pointerdown", e => {
+    if (e.button !== 0 || e.target.closest("button")) return;
+    const head = $("vchead"), r = $("vc").getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top;
+    head.setPointerCapture(e.pointerId); head.classList.add("drag");
+    const move = ev => placeVc(ev.clientX - dx, ev.clientY - dy);
+    const end = () => { head.classList.remove("drag"); head.removeEventListener("pointermove", move); head.removeEventListener("pointerup", end); head.removeEventListener("pointercancel", end); };
+    head.addEventListener("pointermove", move); head.addEventListener("pointerup", end); head.addEventListener("pointercancel", end);
+  });
+  window.addEventListener("resize", () => { if (vcPos) placeVc(vcPos.x, vcPos.y); });
+  // The frame says how tall its tiles are. Only the frame itself is listened to, and only a number is taken.
+  window.addEventListener("message", e => {
+    if (!vcFrame || e.source !== vcFrame.contentWindow || !e.data || e.data.wsvc !== "size") return;
+    const h = Number(e.data.h);
+    if (isFinite(h)) vcFrame.style.height = `${Math.max(60, Math.min(Math.round(h), innerHeight - 60))}px`;
   });
 
   function renderStatus() {
@@ -725,6 +800,7 @@
     hostOnly = false; lastHost = null;
     myAd = false; held = false; wasBusy = false; adMisses = 0; adsBy.clear(); adIgnored.clear(); adKey = "";
     myBuf = false; bufBy.clear(); lastT = -1; stallSince = 0; moving = 0;
+    closeVc();
     hostEl.remove();
     document.removeEventListener("mousemove", showBtn);
     openChat(false); setUnread(0); $("log").replaceChildren(); $("floats").replaceChildren(); typingBy.clear(); renderTyping(); $("prof").hidden = true;
