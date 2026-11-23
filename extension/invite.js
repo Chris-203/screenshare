@@ -6,7 +6,7 @@
   document.documentElement.dataset.watchsync = "1";
   const q = new URLSearchParams(location.search);
   if (!q.has("join")) return;
-  const code = (q.get("join") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+  const code = (q.get("join") || "").toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 24);
   const say = t => { const el = document.getElementById("inviteText"); if (el) el.textContent = t; };
   say("Joining the party…");
   chrome.runtime.sendMessage({ to: "bg", cmd: "linkJoin", code, url: q.get("to") || "" })

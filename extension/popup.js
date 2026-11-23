@@ -12,6 +12,8 @@ const LABELS = {
   "partner-offline": () => "Waiting for the host to come online…",
   reconnecting: () => "Reconnecting…",
   "party-full": () => "This party is full.",
+  "room-busy": () => "Room still open from last time, waiting for it to close…",
+  "room-taken": () => "Someone else has this room open. Leave and pick another name.",
 };
 
 function err(msg) { $("err").textContent = msg || ""; show($("err"), !!msg); }
@@ -22,6 +24,7 @@ async function render() {
   show($("inParty"), !!s.party);
   if (!s.party) return;
   $("codeOut").textContent = s.party.code;
+  $("codeOut").classList.toggle("long", s.party.code.length > 8);
   $("codeHint").textContent = s.party.role === "host" ? "Send the invite link or this code to everyone joining" : "You joined party";
   $("stat").textContent = (LABELS[s.status] || (() => s.status))(s.partnerName);
   $("dot").className = "dot" + (s.status === "connected" ? " on" : "");
@@ -56,24 +59,27 @@ function renderRequests(list) {
 (async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   tabId = tab ? tab.id : null;
-  const { name } = await chrome.storage.local.get("name");
+  const { name, room } = await chrome.storage.local.get(["name", "room"]);
   $("name").value = name || "";
+  $("room").value = room || "";
   await render();
   setInterval(render, 1000);
 })();
 
 $("name").addEventListener("change", () => chrome.storage.local.set({ name: $("name").value.trim() }));
+$("room").addEventListener("change", () => chrome.storage.local.set({ room: $("room").value.trim() }));
 
 $("start").onclick = async () => {
   err();
   const name = $("name").value.trim(); chrome.storage.local.set({ name });
-  const r = await bg({ cmd: "start", tabId, name });
+  const room = $("room").value.trim(); chrome.storage.local.set({ room });
+  const r = await bg({ cmd: "start", tabId, name, room });
   if (!r.ok) err(r.error); render();
 };
 $("join").onclick = async () => {
   err();
-  const code = $("code").value.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  if (code.length !== 6) return err("Codes are 6 characters.");
+  const code = $("code").value.trim().toUpperCase().replace(/\s+/g, "-").replace(/[^A-Z0-9-]/g, "");
+  if (code.length < 3 || code.length > 24) return err("Codes are 3 to 24 letters, numbers or dashes.");
   const name = $("name").value.trim(); chrome.storage.local.set({ name });
   const r = await bg({ cmd: "join", tabId, code, name });
   if (!r.ok) err(r.error); render();

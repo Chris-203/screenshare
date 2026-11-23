@@ -24,6 +24,7 @@
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
   .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(52,211,153,.2); }
   .err { color: #fca5a5; font-size: 12.5px; }
+  .code.long { font-size: 18px; letter-spacing: .06em; overflow-wrap: anywhere; }
   .code-in { text-transform: uppercase; letter-spacing: .14em; }
   .req { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; font-size: 13px; }
   .req span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -40,9 +41,10 @@
   <!-- not in a party -->
   <div id="idle" class="gap hidden">
     <input id="name" placeholder="Your name" maxlength="20">
+    <input id="room" placeholder="Room name (optional, keeps the same link)" maxlength="24" autocomplete="off" spellcheck="false">
     <button id="start" class="primary">Start a party on this tab</button>
     <div class="divider">or join</div>
-    <div class="row"><input id="code" class="code-in" placeholder="Code" maxlength="6" autocomplete="off"><button id="join" class="primary">Join</button></div>
+    <div class="row"><input id="code" class="code-in" placeholder="Code or room" maxlength="24" autocomplete="off"><button id="join" class="primary">Join</button></div>
   </div>
 
   <!-- in a party -->

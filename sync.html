@@ -61,11 +61,12 @@
     <ol>
       <li>Everyone opens the same title on the same service. (An invite link does this for you.)</li>
       <li><b>One person</b> clicks the Watch Sync icon → <b>Start a party on this tab</b>, then <b>Copy invite link</b> and sends it.</li>
-      <li><b>Everyone else</b> opens the link. It opens the same title and joins by itself. (Or click the icon on your tab, type the 6-letter code → <b>Join</b>.) The person who started the party gets an <b>Allow</b> / <b>Deny</b> prompt on the video for each person, and after Allow you'll see "Synced". Up to 8 people can join.</li>
+      <li><b>Everyone else</b> opens the link. It opens the same title and joins by itself. (Or click the icon on your tab, type the code → <b>Join</b>.) The person who started the party gets an <b>Allow</b> / <b>Deny</b> prompt on the video for each person, and after Allow you'll see "Synced". Up to 8 people can join.</li>
       <li>Watch. Play, pause and skipping now happen for everyone. A little message tells you who did what.</li>
       <li>To chat or send a reaction, move the mouse and click the 💬 button on the right edge of the video. It works in fullscreen too.</li>
     </ol>
   </div>
+  <p class="muted">To keep the same link every time, type a <b>Room name</b> (like movie-night) before you start. Watch Sync remembers it, so your friends can bookmark the link and use it any night you're hosting. The room only works while you're in it.</p>
   <p class="muted">The person who started the party can tick <b>Only I can play, pause and skip</b> in the Watch Sync popup. Then if anyone else plays, pauses or skips, their video jumps straight back to the host's spot. Otherwise everyone has control, and anyone who moves on to another episode brings everyone with them.</p>
   <p class="muted">When the person who started the party moves on to the next episode, everyone else follows by themselves. On Prime Video and Apple TV+, and when anyone else changes what they're watching, a popup offers to open it instead. If the video ever drifts, the joiner is quietly nudged back in line.</p>
   <p class="muted">On plans with ads, whoever gets an ad keeps watching it and everyone else pauses with a "Waiting for …'s ad" note. When the last ad ends, everyone carries on together. Ads can't be skipped; they're part of the stream. If the note ever gets stuck, press play and choose <b>Watch anyway</b>.</p>
@@ -75,8 +76,8 @@
   // Invite links (sync.html?join=CODE&to=PAGE). With Watch Sync installed, its invite.js takes over this
   // box and opens the show. Without it, nothing answers, so point at the install steps instead.
   (() => {
-    const code = (new URLSearchParams(location.search).get("join") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
-    if (code.length !== 6) return;
+    const code = (new URLSearchParams(location.search).get("join") || "").toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 24);
+    if (code.length < 3) return;
     document.getElementById("invite").hidden = false;
     setTimeout(() => {
       if (document.documentElement.dataset.watchsync) return;

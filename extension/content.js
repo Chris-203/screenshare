@@ -219,6 +219,8 @@
       "partner-offline": [`Waiting for ${partner === "Partner" ? "the host" : partner}…`, false],
       reconnecting: ["Reconnecting…", false],
       "party-full": ["Party is full", false],
+      "room-busy": ["Waiting for the room to close from last time…", false],
+      "room-taken": ["Someone else has this room open", false],
     };
     const [t, on] = map[linkStatus] || ["Watch Sync", false];
     const waits = waitingOn();

@@ -86,7 +86,9 @@ function siteUrl(raw) {
   const h = u.hostname.toLowerCase();
   return SITES.some(e => h === e.base || (e.sub && h.endsWith("." + e.base))) ? u : null;
 }
-const cleanCode = c => String(c || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+// Party codes: the random 6 characters, or a saved room name like MOVIE-NIGHT (3 to 24 letters, digits and dashes).
+const cleanCode = c => String(c || "").toUpperCase().replace(/\s+/g, "-").replace(/[^A-Z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
+const okCode = c => c.length >= 3;
 async function savedName() { try { return (await chrome.storage.local.get("name")).name || ""; } catch { return ""; } }
 async function inviteLink(s) {
   let page = null;
@@ -106,7 +108,11 @@ async function handle(m, sender) {
     case "start":
     case "join": {
       // `id` makes each guest's peer ID its own, so several guests can be in one party.
-      const party = { code: m.cmd === "start" ? newCode() : m.code, role: m.cmd === "start" ? "host" : "guest", name: m.name || (m.cmd === "start" ? "Chris" : "Partner"), id: newId() };
+      // A host with a saved room uses its name every time, so the same invite link works every night.
+      const room = m.cmd === "start" ? cleanCode(m.room) : "";
+      const code = m.cmd === "start" ? (okCode(room) ? room : newCode()) : cleanCode(m.code);
+      if (!okCode(code)) return { ok: false, error: "Codes are 3 to 24 letters, numbers or dashes." };
+      const party = { code, role: m.cmd === "start" ? "host" : "guest", name: m.name || (m.cmd === "start" ? "Chris" : "Partner"), id: newId() };
       await setState({ party, status: "connecting", partnerName: null, requests: [], hostOnly: false });
       const ok = await activateTab(m.tabId);
       if (!ok) { await setState({ party: null, tabId: null, status: "idle" }); return { ok: false, error: "Open Netflix, Disney+, Max, Hulu, Prime Video or another supported site in this tab first, then try again." }; }
@@ -137,7 +143,7 @@ async function handle(m, sender) {
     case "linkJoin": {
       if (!sender.tab || !sender.url || !sender.url.startsWith(INVITE_PAGE)) return { ok: false };
       const code = cleanCode(m.code), page = siteUrl(m.url);
-      if (code.length !== 6) return { ok: false, error: "This invite link is broken. Ask for a new one." };
+      if (!okCode(code)) return { ok: false, error: "This invite link is broken. Ask for a new one." };
       if (s.party && s.party.code === code && s.party.role === "host") return { ok: false, error: "That's the link to your own party. Send it to the people joining." };
       if (!page) return { ok: false, error: `Open the show, then click the Watch Sync button and join with the code ${code}.` };
       // Opening someone's link means "put me in that party", so a different party you're in ends first.
