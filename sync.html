@@ -22,6 +22,9 @@
   code { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 14px; color: var(--text); }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 4px 20px; margin-top: 12px; }
   .sites { display: flex; flex-wrap: wrap; gap: 8px; padding: 0; list-style: none; }
+  .invite { background: #1d1730; border: 1px solid var(--accent); border-radius: 14px; padding: 14px 18px; margin: 18px 0 0; }
+  .invite b { color: var(--text); }
+  .invite p { margin: 4px 0; }
   .sites li { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font-size: 14px; }
 </style>
 </head>
@@ -30,6 +33,10 @@
   <p class="muted"><a href="./">Screen share</a> · <a href="party.html">Watch party</a></p>
   <h1>Watch Sync</h1>
   <p>Our own Teleparty: when one of us plays, pauses or skips, everyone else's video does the same. Each person streams from their own account, so the picture is full quality with no lag.</p>
+  <div class="invite" id="invite" hidden>
+    <p><b>You're invited to a watch party.</b></p>
+    <p id="inviteText">Checking for Watch Sync…</p>
+  </div>
   <a class="dl" href="watch-sync.zip" download>Download Watch Sync (.zip)</a>
   <p class="muted">Works in Chrome or Edge on Windows and Mac. Not on iPhone or iPad.</p>
 
@@ -52,9 +59,9 @@
   <h2>Using it</h2>
   <div class="card">
     <ol>
-      <li>Everyone opens the same title on the same service.</li>
-      <li><b>One person</b> clicks the Watch Sync icon → <b>Start a party on this tab</b> and sends the 6-letter code.</li>
-      <li><b>Everyone else</b> clicks the icon on their tab, types the code → <b>Join</b>. The person who started the party gets an <b>Allow</b> / <b>Deny</b> prompt on the video for each person, and after Allow you'll see "Synced". Up to 8 people can join.</li>
+      <li>Everyone opens the same title on the same service. (An invite link does this for you.)</li>
+      <li><b>One person</b> clicks the Watch Sync icon → <b>Start a party on this tab</b>, then <b>Copy invite link</b> and sends it.</li>
+      <li><b>Everyone else</b> opens the link. It opens the same title and joins by itself. (Or click the icon on your tab, type the 6-letter code → <b>Join</b>.) The person who started the party gets an <b>Allow</b> / <b>Deny</b> prompt on the video for each person, and after Allow you'll see "Synced". Up to 8 people can join.</li>
       <li>Watch. Play, pause and skipping now happen for everyone. A little message tells you who did what.</li>
       <li>To chat or send a reaction, move the mouse and click the 💬 button on the right edge of the video. It works in fullscreen too.</li>
     </ol>
@@ -62,6 +69,20 @@
   <p class="muted">The person who started the party can tick <b>Only I can play, pause and skip</b> in the Watch Sync popup. Then if anyone else plays, pauses or skips, their video jumps straight back to the host's spot. Otherwise everyone has control, and anyone who moves on to another episode brings everyone with them.</p>
   <p class="muted">When the person who started the party moves on to the next episode, everyone else follows by themselves. On Prime Video and Apple TV+, and when anyone else changes what they're watching, a popup offers to open it instead. If the video ever drifts, the joiner is quietly nudged back in line.</p>
   <p class="muted">On plans with ads, whoever gets an ad keeps watching it and everyone else pauses with a "Waiting for …'s ad" note. When the last ad ends, everyone carries on together. Ads can't be skipped; they're part of the stream. If the note ever gets stuck, press play and choose <b>Watch anyway</b>.</p>
+  <p class="muted">Buffering works the same way: if someone's video gets stuck loading for more than a second, everyone else pauses with "Waiting for … to buffer" and you all carry on together once it's moving again.</p>
 </main>
+<script>
+  // Invite links (sync.html?join=CODE&to=PAGE). With Watch Sync installed, its invite.js takes over this
+  // box and opens the show. Without it, nothing answers, so point at the install steps instead.
+  (() => {
+    const code = (new URLSearchParams(location.search).get("join") || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+    if (code.length !== 6) return;
+    document.getElementById("invite").hidden = false;
+    setTimeout(() => {
+      if (document.documentElement.dataset.watchsync) return;
+      document.getElementById("inviteText").textContent = `Install Watch Sync first (steps below, about a minute), then open the invite link again. Or join from the Watch Sync button with the code ${code}.`;
+    }, 2500);
+  })();
+</script>
 </body>
 </html>

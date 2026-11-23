@@ -222,8 +222,9 @@
     };
     const [t, on] = map[linkStatus] || ["Watch Sync", false];
     const waits = waitingOn();
-    if (on && myAd) pill(waits.length ? `Ad break. ${namesOf(waits)} ${waits.length > 1 ? "are" : "is"} in one too` : "You're in an ad. Everyone will wait for you", true, true);
-    else if (on && held) pill(`Waiting for ${namesOf(waits)}'s ad${waits.length > 1 ? "s" : ""} to end…`, false, true);
+    if (on && myAd) pill(waits.length ? `Ad break. Waiting for ${namesOf(waits)} too` : "You're in an ad. Everyone will wait for you", true, true);
+    else if (on && myBuf) pill(waits.length ? `Your video is loading. Waiting for ${namesOf(waits)} too` : "Your video is loading. Everyone will wait for you", true, true);
+    else if (on && held) pill(`${holdText(waits)}…`, false, true);
     else pill(t, on, !on);
     $("cin").disabled = !on;
     $("cin").placeholder = on ? "Message" : "Waiting for your partner…";
@@ -270,7 +271,7 @@
     // During your own ad the video's events belong to the ad, so none of them go out.
     if (!active || !video || myAd || Date.now() < suppressUntil) return;
     if (held && type === "play") { suppress(800); doPause(); askToWait(); return; }
-    if (role === "guest" && hostOnly && !adsBy.size) return putBack();
+    if (role === "guest" && hostOnly && !adsBy.size && !bufBy.size) return putBack();
     const t = video.currentTime, at = Date.now();
     if (type === "seeked") send({ type: "seek", t, paused: video.paused, at });
     else send({ type, t, at });
@@ -312,14 +313,15 @@
   function onTick(m) {
     if (role !== "guest") return;
     if (m.fromHost === true) { lastHost = { t: m.t, paused: !!m.paused, at: m.at }; setHostOnly(m.hostOnly === true); }
-    if (!video || myAd || held || following || adsBy.size) return;
+    if (!video || myAd || myBuf || held || following || adsBy.size || bufBy.size) return;
     const elapsed = Math.max(0, (Date.now() - m.at) / 1000);
     const target = m.paused ? m.t : m.t + elapsed;
     if (m.force || m.paused !== video.paused) {
       pausedMismatch++;
       if (m.force || pausedMismatch >= 2) {
         suppress(1500);
-        if (Math.abs(video.currentTime - target) > 0.6) doSeek(target);
+        // Right after a wait (an ad or someone buffering) everyone lines up exactly, so nobody stays half a second off.
+        if (Math.abs(video.currentTime - target) > (m.snap ? 0.25 : 0.6)) doSeek(target);
         if (m.paused && !video.paused) doPause();
         if (!m.paused && video.paused) doPlay();
         pausedMismatch = 0;
@@ -330,9 +332,9 @@
     if (!m.paused && Math.abs(video.currentTime - target) > 1.2 && Date.now() > suppressUntil) { suppress(1500); doSeek(target); }
   }
 
-  function sendTick(force) {
+  function sendTick(force, snap) {
     if (!active || role !== "host" || !video || myAd) return;
-    send({ type: "tick", t: video.currentTime, paused: video.paused, at: Date.now(), force: !!force, hostOnly });
+    send({ type: "tick", t: video.currentTime, paused: video.paused, at: Date.now(), force: !!force, snap: !!snap, hostOnly });
   }
 
   // `moved` means this person just went to another page (not a reply to someone joining), so the others may follow.
@@ -354,6 +356,7 @@
     const out = [];
     try {
       for (const cs of chrome.runtime.getManifest().content_scripts || []) {
+        if (!(cs.js || []).includes("content.js")) continue;   // only the streaming sites, not the invite page
         for (const pat of cs.matches || []) {
           const mm = /^[^:]+:\/\/(\*\.)?([a-z0-9.-]+)\//i.exec(pat);
           if (mm) out.push({ base: mm[2].toLowerCase(), sub: !!mm[1] });
@@ -422,9 +425,10 @@
 
   function onPeer(m) {
     if (!active || !m) return;
-    if (m.type === "joined") { sendNav(); sendAd(); if (role === "host") send({ type: "control", hostOnly }); setTimeout(() => sendTick(true), 400); return; }
+    if (m.type === "joined") { sendNav(); sendAd(); sendBuf(); if (role === "host") send({ type: "control", hostOnly }); setTimeout(() => sendTick(true), 400); return; }
     if (m.type === "syncreq") { if (role === "host" && syncIn()) { sendNav(); sendAd(); setTimeout(() => sendTick(true), 300); } return; }
     if (m.type === "ad") return onAd(m);
+    if (m.type === "buffer") return onBuffer(m);
     if (m.type === "control") { if (role === "guest" && m.fromHost === true) setHostOnly(m.hostOnly === true); return; }
     if (m.type === "play" || m.type === "pause" || m.type === "seek") applyRemote(m);
     else if (m.type === "tick") onTick(m);
@@ -476,13 +480,21 @@
     /\b(your|the) (show|video|program|movie|episode) will (resume|continue|start|begin)\b/i,
     /\b(show|video|program|movie|episode) (resumes|continues|starts|begins) in\b/i,
   ];
-  const AD_STALE = 15000;   // someone in an ad repeats it every 5 s; past this they're treated as gone
+  const AD_STALE = 15000;   // someone in an ad (or buffering) repeats it every 5 s; past this they're treated as gone
   let myAd = false, adMisses = 0, adSent = 0, held = false, resumeAfterHold = false, lastPlaying = 0, wasBusy = false, adKey = "";
   const adsBy = new Map();     // name -> when we last heard they're in an ad
-  const adIgnored = new Set(); // names this person chose not to wait for, until that ad ends
+  const bufBy = new Map();     // name -> when we last heard their video is stuck loading
+  const adIgnored = new Set(); // names this person chose not to wait for, until that ad or loading ends
   const adIn = limiter(10, 1000), syncIn = limiter(3, 3000);
   const namesOf = a => a.length < 2 ? (a[0] || "") : `${a.slice(0, -1).join(", ")} and ${a[a.length - 1]}`;
-  const waitingOn = () => [...adsBy.keys()].filter(n => !adIgnored.has(n));
+  const waitingOn = () => [...new Set([...adsBy.keys(), ...bufBy.keys()])].filter(n => !adIgnored.has(n));
+  // "Waiting for Sam's ad to end", "Waiting for Sam to buffer", or both kinds at once.
+  function holdText(waits) {
+    const ads = waits.filter(n => adsBy.has(n)), bufs = waits.filter(n => !adsBy.has(n));
+    if (!bufs.length) return `Waiting for ${namesOf(ads)}'s ad${ads.length > 1 ? "s" : ""} to end`;
+    if (!ads.length) return `Waiting for ${namesOf(bufs)} to buffer`;
+    return `Waiting for ${namesOf(waits)}`;
+  }
 
   const visible = el => {
     if (!el || !el.isConnected) return false;
@@ -521,7 +533,7 @@
     updateHold();
     if (video && video.paused) doPlay();
   }
-  const askToWait = () => toast(`Waiting for ${namesOf(waitingOn())}'s ad to end`, "Watch anyway", watchAnyway, 8000);
+  const askToWait = () => toast(holdText(waitingOn()), "Watch anyway", watchAnyway, 8000);
 
   function checkAd() {
     if (!active) return;
@@ -531,8 +543,9 @@
     if (!myAd && hit) { myAd = true; sendAd(); }
     else if (myAd && adMisses >= 3) { myAd = false; suppress(1500); send({ type: "ad", on: false, at: now }); }  // 1.5 s clear, so a flicker isn't an end
     else if (myAd && now - adSent > 5000) sendAd();
+    checkBuffer(now);
     if (video && !video.paused && !myAd && !held) lastPlaying = now;
-    for (const [n, t] of adsBy) if (now - t > AD_STALE) { adsBy.delete(n); adIgnored.delete(n); }
+    for (const m of [adsBy, bufBy]) for (const [n, t] of m) if (now - t > AD_STALE) { m.delete(n); if (!adsBy.has(n) && !bufBy.has(n)) adIgnored.delete(n); }
     updateHold();
   }
 
@@ -540,15 +553,42 @@
     if (!adIn()) return;
     const who = nameOf(m);
     if (m.on === true) adsBy.set(who, Date.now());
-    else { adsBy.delete(who); adIgnored.delete(who); }
+    else { adsBy.delete(who); if (!bufBy.has(who)) adIgnored.delete(who); }
+    updateHold();
+  }
+
+  // ------------------------------------------------------------ buffering
+  // Same idea as an ad break: whoever's video is stuck loading tells the others, everyone else pauses,
+  // and when it's moving again the host picks up and brings everyone back to its spot.
+  // "Stuck" means playing (not paused) while the time hasn't moved for BUF_AFTER. That works on every
+  // player, including ones that never fire a "waiting" event, and a quick seek that loads fast doesn't count.
+  const BUF_AFTER = 1000;
+  let myBuf = false, bufSent = 0, lastT = -1, stallSince = 0, moving = 0;
+  const sendBuf = () => { if (myBuf) { bufSent = Date.now(); send({ type: "buffer", on: true, at: bufSent }); } };
+  function endBuf(now) { if (!myBuf) return; myBuf = false; send({ type: "buffer", on: false, at: now }); }
+  function checkBuffer(now) {
+    const t = video ? video.currentTime : -1;
+    const playing = !!video && !video.paused && !video.ended && !myAd && !held;
+    if (playing && Math.abs(t - lastT) < 0.01) { stallSince ||= now; moving = 0; }
+    else { stallSince = 0; moving = playing ? moving + 1 : 0; }
+    lastT = t;
+    if (!myBuf && stallSince && now - stallSince >= BUF_AFTER) { myBuf = true; sendBuf(); }
+    else if (myBuf && (!playing || moving >= 2)) endBuf(now);   // moving again for two checks in a row, or paused / gone
+    else if (myBuf && now - bufSent > 5000) sendBuf();
+  }
+  function onBuffer(m) {
+    if (!adIn()) return;
+    const who = nameOf(m);
+    if (m.on === true) bufBy.set(who, Date.now());
+    else { bufBy.delete(who); if (!adsBy.has(who)) adIgnored.delete(who); }
     updateHold();
   }
 
   function updateHold() {
-    const waits = waitingOn(), busy = myAd || waits.length > 0, was = held;
-    held = !myAd && waits.length > 0;
+    const waits = waitingOn(), busy = myAd || myBuf || waits.length > 0, was = held;
+    held = !myAd && !myBuf && waits.length > 0;
     // The host remembers whether the show was playing when the break began, to pick up again after it.
-    if (busy && !wasBusy && role === "host") resumeAfterHold = myAd || Date.now() - lastPlaying < 3000;
+    if (busy && !wasBusy && role === "host") resumeAfterHold = myAd || myBuf || Date.now() - lastPlaying < 3000;
     if (held) {
       bind();
       if (video && !video.paused) { suppress(1500); doPause(); }
@@ -557,13 +597,13 @@
     if (!busy && wasBusy && role === "host") {
       // Everyone's ad is over: play again if we were playing, then put everyone on the host's spot.
       setTimeout(() => {
-        if (!active || myAd || held) return;
+        if (!active || myAd || myBuf || held) return;
         if (resumeAfterHold && video && video.paused) { suppress(1500); doPlay(); }
-        setTimeout(() => sendTick(true), 400);
+        setTimeout(() => sendTick(true, true), 400);
       }, 500);
     }
     wasBusy = busy;
-    const key = `${myAd}|${held}|${waits.join(",")}`;
+    const key = `${myAd}|${myBuf}|${held}|${waits.map(n => (adsBy.has(n) ? "a:" : "b:") + n).join(",")}`;
     if (key !== adKey) { adKey = key; if (active) renderStatus(); }
   }
 
@@ -593,6 +633,7 @@
     off.splice(0).forEach(f => f()); video = null;
     hostOnly = false; lastHost = null;
     myAd = false; held = false; wasBusy = false; adMisses = 0; adsBy.clear(); adIgnored.clear(); adKey = "";
+    myBuf = false; bufBy.clear(); lastT = -1; stallSince = 0; moving = 0;
     hostEl.remove();
     document.removeEventListener("mousemove", showBtn);
     openChat(false); setUnread(0); $("log").replaceChildren(); $("floats").replaceChildren();
@@ -600,6 +641,8 @@
 
   chrome.runtime.onMessage.addListener((m, _sender, reply) => {
     if (!m || m.to) return;   // messages with `to` are for the background/offscreen, not us
+    // The host's invite link carries the page it's on, so a guest opening the link lands on the same title.
+    if (m.type === "where") return reply({ ok: true, url: location.href, title: document.title });
     reply({ ok: true });
     if (m.type === "activate") activate(m);
     else if (m.type === "deactivate") deactivate();

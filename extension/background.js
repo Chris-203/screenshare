@@ -15,12 +15,13 @@ const makeQueue = () => {
 };
 const stateQueue = makeQueue();
 const commandQueue = makeQueue();
-const COMMANDS = new Set(["start", "join", "bindTab", "leave"]);
+const COMMANDS = new Set(["start", "join", "bindTab", "leave", "linkJoin"]);
 const newId = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(36).padStart(2, "0")).join("");
 
 // `requests` is the host's list of people waiting for Allow / Deny: [{ id, name }].
 // `hostOnly`: the host keeps play, pause, skip and changing titles to themselves.
-const IDLE = { party: null, tabId: null, status: "idle", partnerName: null, requests: [], hostOnly: false };
+// `pendingJoin`: an invite link was opened in this tab; join once the show's page there says hello.
+const IDLE = { party: null, tabId: null, status: "idle", partnerName: null, requests: [], hostOnly: false, pendingJoin: null };
 async function readState() {
   const { ws } = await chrome.storage.session.get("ws");
   return ws || { ...IDLE };
@@ -64,6 +65,35 @@ async function activateTab(tabId) {
   return toTab({ type: "activate", role: s.party.role, partnerName: s.partnerName, status: s.status, requests: s.requests || [], hostOnly: !!s.hostOnly }, tabId);
 }
 
+// ------------------------------------------------------------ invite links
+// The host copies a link to sync.html on the site. Opened by someone who has the extension, invite.js
+// there hands the code and the host's page to us; we open that page in the same tab and join once the
+// show's page loads. Someone without the extension just sees the install steps on that page.
+const INVITE_PAGE = "https://chris-203.github.io/screenshare/sync.html";
+// Hosts content.js runs on, from manifest.json, so a link can only ever open a supported streaming site.
+const SITES = (() => {
+  const out = [];
+  for (const cs of chrome.runtime.getManifest().content_scripts || []) {
+    if (!(cs.js || []).includes("content.js")) continue;
+    for (const pat of cs.matches || []) { const mm = /^[^:]+:\/\/(\*\.)?([a-z0-9.-]+)\//i.exec(pat); if (mm) out.push({ base: mm[2].toLowerCase(), sub: !!mm[1] }); }
+  }
+  return out;
+})();
+function siteUrl(raw) {
+  if (typeof raw !== "string" || raw.length > 2048) return null;
+  let u; try { u = new URL(raw); } catch { return null; }
+  if (u.protocol !== "https:" || u.username || u.password) return null;
+  const h = u.hostname.toLowerCase();
+  return SITES.some(e => h === e.base || (e.sub && h.endsWith("." + e.base))) ? u : null;
+}
+const cleanCode = c => String(c || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+async function savedName() { try { return (await chrome.storage.local.get("name")).name || ""; } catch { return ""; } }
+async function inviteLink(s) {
+  let page = null;
+  if (s.tabId != null) { try { const r = await chrome.tabs.sendMessage(s.tabId, { type: "where" }); page = r && siteUrl(r.url); } catch {} }
+  return `${INVITE_PAGE}?join=${s.party.code}` + (page ? `&to=${encodeURIComponent(page.href)}` : "");
+}
+
 async function handle(m, sender) {
   if (m.to !== "bg") return;
   const s = await getState();
@@ -94,10 +124,28 @@ async function handle(m, sender) {
     case "leave":
       await toOffscreen({ cmd: "close" });
       await toTab({ type: "deactivate" });
-      await setState({ party: null, tabId: null, status: "idle", partnerName: null, requests: [], hostOnly: false });
+      await setState({ party: null, tabId: null, status: "idle", partnerName: null, requests: [], hostOnly: false, pendingJoin: null });
       try { await chrome.offscreen.closeDocument(); } catch {}
       chrome.action.setBadgeText({ text: "" });
       return { ok: true };
+
+    case "invite":
+      if (!s.party) return { ok: false };
+      return { ok: true, link: await inviteLink(s) };
+
+    // ---------- from invite.js on the invite page
+    case "linkJoin": {
+      if (!sender.tab || !sender.url || !sender.url.startsWith(INVITE_PAGE)) return { ok: false };
+      const code = cleanCode(m.code), page = siteUrl(m.url);
+      if (code.length !== 6) return { ok: false, error: "This invite link is broken. Ask for a new one." };
+      if (s.party && s.party.code === code && s.party.role === "host") return { ok: false, error: "That's the link to your own party. Send it to the people joining." };
+      if (!page) return { ok: false, error: `Open the show, then click the Watch Sync button and join with the code ${code}.` };
+      // Opening someone's link means "put me in that party", so a different party you're in ends first.
+      if (s.party && s.party.code !== code) await handle({ to: "bg", cmd: "leave" }, {});
+      await setState({ pendingJoin: { tabId: sender.tab.id, code, at: Date.now() } });
+      await chrome.tabs.update(sender.tab.id, { url: page.href });
+      return { ok: true, site: page.hostname.replace(/^www\./, "") };
+    }
 
     // ---------- from the popup or the synced tab: the host's answer to someone asking to join
     case "decide":
@@ -117,6 +165,17 @@ async function handle(m, sender) {
 
     // ---------- from content scripts
     case "hello": {
+      const pj = s.pendingJoin;
+      if (pj && sender.tab && sender.tab.id === pj.tabId) {
+        await setState({ pendingJoin: null });
+        if (Date.now() - pj.at < 120000) {
+          // Joining activates this tab itself, so this page doesn't activate twice.
+          const tabId = sender.tab.id, name = await savedName();
+          if (s.party && s.party.code === pj.code) commandQueue(() => handle({ to: "bg", cmd: "bindTab", tabId }, {}));
+          else commandQueue(() => handle({ to: "bg", cmd: "join", tabId, code: pj.code, name }, {}));
+          return { active: false };
+        }
+      }
       const active = !!s.party && sender.tab && sender.tab.id === s.tabId;
       return active ? { active, role: s.party.role, partnerName: s.partnerName, status: s.status, requests: s.requests || [], hostOnly: !!s.hostOnly } : { active: false };
     }

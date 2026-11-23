@@ -33,6 +33,11 @@
       "js": ["netflix-main.js"],
       "world": "MAIN",
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://chris-203.github.io/screenshare/sync.html*"],
+      "js": ["invite.js"],
+      "run_at": "document_idle"
     }
   ]
 }

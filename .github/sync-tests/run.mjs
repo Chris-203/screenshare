@@ -287,11 +287,13 @@ async function extensionSuite(hub, web) {
   };
 
   const open = async name => {
+    // The invite page is answered locally too, from this repo's sync.html.
     const ctx = await chromium.launchPersistentContext(join(work, name), {
       channel: "chromium", headless: true,
       args: [...LAUNCH_ARGS, `--disable-extensions-except=${ext}`, `--load-extension=${ext}`],
     });
     await ctx.route("https://www.youtube.com/**", serve);
+    await ctx.route("https://chris-203.github.io/**", serveInvite);
     const worker = ctx.serviceWorkers()[0] || await ctx.waitForEvent("serviceworker", { timeout: 20000 });
     const id = new URL(worker.url()).host;
     const page = ctx.pages()[0] || await ctx.newPage(); watchErrors(page, name);
@@ -346,11 +348,72 @@ async function extensionSuite(hub, web) {
       await expectPlayingInSync("extension", "Both play the next episode together", host.page, guest.page, { settle: 5000 });
     }
 
+    // Buffering: a video that's playing but stuck (playback rate 0 stands in for a stalled stream) makes
+    // the other side pause until it's moving again, then both carry on together.
+    if (followed) {
+      await bufferHold("Guest", guest.page, host.page, guest.page);
+      await bufferHold("Host", host.page, host.page, guest.page);
+    }
+
     await hostOnly("extension", "Guest", host.page, guest.page, on => host.once({ cmd: "setControl", hostOnly: on }));
+
+    // Invite link: the guest leaves, the host moves on to another title and copies the link,
+    // and the guest opening it lands on that title and joins by itself.
+    await guest.once({ cmd: "leave" });
+    const third = SITE.replace("sync-test", "sync-test-3");
+    await host.page.goto(third);
+    await hasVideo(host.page);
+    await onVideo(host.page, v => v.play());
+    await sleep(1500);
+    const invite = await host.once({ cmd: "invite" });
+    const link = invite && invite.ok ? invite.link : "";
+    check("extension", "Invite link carries the code and the title", link.startsWith(INVITE_PAGE + "?join=" + started.party.code) && link.includes("&to=" + encodeURIComponent(third)), link || "no link");
+    // Someone without Watch Sync gets the install steps instead.
+    const plain = await chromium.launch({ args: LAUNCH_ARGS });
+    try {
+      const p = await plain.newPage();
+      await p.route("https://chris-203.github.io/**", serveInvite);
+      await p.goto(link);
+      await sleep(3200);
+      const text = await p.textContent("#inviteText");
+      check("extension", "Without Watch Sync the link shows install steps", /Install Watch Sync first/.test(text) && text.includes(started.party.code), text);
+    } finally { await plain.close(); }
+    await guest.page.goto(link);
+    let landed = true;
+    try { await until("the guest to land on the host's title", async () => guest.page.url() === third, 20000); } catch { landed = false; }
+    check("extension", "Opening the link opens the host's title", landed, landed ? "" : `guest is on ${guest.page.url()}`);
+    if (landed) {
+      await hasVideo(guest.page);
+      const asking2 = await until("the link guest's request to reach the host", async () => { const r = (await host.once({ cmd: "status" })).requests; return r && r.length && r; });
+      await host.worker.evaluate(id => chrome.runtime.sendMessage({ to: "off", cmd: "decide", id, allow: true }), asking2[0].id);
+      await until("the link guest to connect", async () => (await guest.once({ cmd: "status" })).status === "connected");
+      await expectPlayingInSync("extension", "Guest joins from the invite link mid-playback", host.page, guest.page, { settle: 5000 });
+    }
   } finally {
     await Promise.all(sides.map(s => s.ctx.close().catch(() => {})));
     rmSync(work, { recursive: true, force: true });
   }
+}
+
+// The invite page, from this repo. Anything else on that site is a 404.
+const INVITE_PAGE = "https://chris-203.github.io/screenshare/sync.html";
+const serveInvite = route => new URL(route.request().url()).pathname === "/screenshare/sync.html"
+  ? route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: readFileSync(join(root, "sync.html"), "utf8") })
+  : route.fulfill({ status: 404, body: "not found" });
+
+// Someone's video stalls while playing. The other side pauses and waits, the stalled side's position
+// stays put, and once it's moving again both play on in sync.
+async function bufferHold(who, slow, hostPage, guestPage) {
+  const other = slow === hostPage ? guestPage : hostPage;
+  await onVideo(slow, v => { v.playbackRate = 0; });
+  await sleep(3000);
+  const [a, w] = await Promise.all([probe(slow), probe(other)]);
+  check("extension", `${who} buffering: the other side waits`, !!(a && w && !a.paused && w.paused), w ? `waiting at ${w.t.toFixed(2)} s, stuck at ${a.t.toFixed(2)} s` : "no video");
+  await sleep(2000);
+  const w2 = await probe(other);
+  check("extension", `${who} buffering: still waiting 5 s in`, !!(w2 && w2.paused), w2 ? `other side ${w2.paused ? "paused" : "playing"} at ${w2.t.toFixed(2)} s` : "no video");
+  await onVideo(slow, v => { v.playbackRate = 1; });
+  await expectPlayingInSync("extension", `${who}'s video loads, both play on`, hostPage, guestPage, { settle: 5000 });
 }
 
 // Host only: with both playing, the guest's pause and skip are undone and the host doesn't move.
