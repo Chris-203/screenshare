@@ -25,6 +25,17 @@
   const cleanText = s => Array.from((typeof s === "string" ? s : "").slice(0, 4000).replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, " ").trim()).slice(0, MAX_CHAT).join("");
   // At most n calls per ms; anything faster is dropped.
   const limiter = (n, ms) => { let seen = []; return () => { const t = Date.now(); seen = seen.filter(x => t - x < ms); if (seen.length >= n) return false; seen.push(t); return true; }; };
+  // Avatars are made here, nothing is fetched: a colored circle with initials, or one emoji from this fixed set.
+  // The color comes from the name, so the same name always gets the same color on every screen.
+  const AVATARS = ["😀", "😎", "🤓", "🥳", "😺", "🐶", "🦊", "🐼", "🐸", "🐵", "🦄", "🐙", "👻", "🤖", "👽", "🍿"];
+  const cleanAv = a => AVATARS.includes(a) ? a : "";
+  const initials = n => (n.trim().split(/\s+/).slice(0, 2).map(w => Array.from(w)[0] || "").join("") || "?").toUpperCase();
+  const colorOf = n => { let h = 0; for (const c of n) h = (h * 31 + c.codePointAt(0)) >>> 0; return `hsl(${h % 360} 55% 42%)`; };
+  function avatar(name, av) {
+    const el = document.createElement("span"); el.className = "av";
+    if (cleanAv(av)) { el.textContent = av; el.classList.add("emo"); } else { el.textContent = initials(name); el.style.background = colorOf(name); }
+    return el;
+  }
 
   // ------------------------------------------------------------ on-page UI (shadow DOM so site CSS can't touch it)
   const hostEl = document.createElement("div");
@@ -73,6 +84,21 @@
       .head button:hover { color: #eceef2; }
       .log { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
       .log:empty::before { content: "No messages yet"; color: #9095a1; }
+      .row { display: flex; gap: 8px; align-items: flex-start; }
+      .msg { flex: 1; min-width: 0; }
+      .av { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; overflow: hidden;
+        font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #fff; background: #2a2d35; }
+      .av.emo { font-size: 17px; background: #2a2d35; }
+      .head .hb { display: flex; gap: 4px; align-items: center; }
+      .head #pbtn { padding: 0; border-radius: 50%; }
+      .head #pbtn .av { width: 26px; height: 26px; font-size: 11px; }
+      .head #pbtn .av.emo { font-size: 16px; }
+      .prof { padding: 10px 14px; border-bottom: 1px solid #2a2d35; display: flex; flex-direction: column; gap: 8px; }
+      .prof label { font-size: 12px; color: #9095a1; }
+      .avs { display: flex; flex-wrap: wrap; gap: 4px; }
+      .avs button { all: unset; cursor: pointer; border-radius: 50%; padding: 2px; border: 2px solid transparent; }
+      .avs button.on { border-color: #a78bfa; }
+      .typing { padding: 0 14px 6px; font-size: 12px; color: #9095a1; font-style: italic; }
       .who { font-size: 12px; color: #9095a1; }
       .me .who { color: #a78bfa; }
       .txt { overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -94,8 +120,15 @@
     <div class="floats" id="floats"></div>
     <button class="chatbtn dim" id="cbtn" title="Chat" aria-label="Chat">💬<span class="badge" id="badge" hidden></span></button>
     <div class="panel" id="panel">
-      <div class="head"><span>Chat</span><button id="cclose" title="Close" aria-label="Close chat">×</button></div>
+      <div class="head"><span>Chat</span><span class="hb"><button id="pbtn" title="Your name and picture" aria-label="Your name and picture"></button><button id="cclose" title="Close" aria-label="Close chat">×</button></span></div>
+      <div class="prof" id="prof" hidden>
+        <label for="pname">Your name</label>
+        <input id="pname" type="text" maxlength="20" placeholder="Your name" autocomplete="off" spellcheck="false">
+        <label>Your picture</label>
+        <div class="avs" id="avs"></div>
+      </div>
       <div class="log" id="log"></div>
+      <div class="typing" id="typing" hidden></div>
       <div class="reacts" id="reacts"></div>
       <form id="cform"><input id="cin" type="text" maxlength="${MAX_CHAT}" placeholder="Message" autocomplete="off" spellcheck="false"><button>Send</button></form>
     </div>`;
@@ -164,12 +197,13 @@
     if (on) { setUnread(0); $("log").scrollTop = $("log").scrollHeight; if (!$("cin").disabled) $("cin").focus(); }
     else { $("cin").blur(); showBtn(); }
   }
-  function addMsg(who, text, mine) {
-    const row = document.createElement("div"); row.className = mine ? "me" : "";
+  function addMsg(who, text, mine, name, av) {
+    const row = document.createElement("div"); row.className = mine ? "row me" : "row";
+    const msg = document.createElement("div"); msg.className = "msg";
     const head = document.createElement("div"); head.className = "who";
     head.textContent = `${who} · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
     const body = document.createElement("div"); body.className = "txt"; body.textContent = text;
-    row.append(head, body);
+    msg.append(head, body); row.append(avatar(name || who, av), msg);
     const log = $("log"); log.append(row);
     while (log.childElementCount > 200) log.firstElementChild.remove();
     log.scrollTop = log.scrollHeight;
@@ -194,20 +228,73 @@
     e.preventDefault();
     const text = cleanText($("cin").value);
     if (!text || linkStatus !== "connected") return;
-    $("cin").value = "";
-    send({ type: "chat", text });
-    addMsg("You", text, true);
+    $("cin").value = ""; typedAt = 0;
+    send({ type: "chat", text, av: myAv });
+    addMsg("You", text, true, myName(), myAv);
   };
   function onChat(m) {
     const text = cleanText(m.text);
     if (!text || !chatIn()) return;
     const who = nameOf(m); // in a party of several, partner is everyone's names; the host stamps each message with its sender
-    addMsg(who, text, false);
+    typingBy.delete(who); renderTyping();
+    addMsg(who, text, false, who, m.av);
     if (chatOpen()) return;
     setUnread(unread + 1);
     toast(`${who}: ${text.length > 80 ? text.slice(0, 80) + "…" : text}`, "Reply", () => openChat(true), 5000);
   }
   function onReact(m) { if (REACTIONS.includes(m.emoji) && reactIn()) float(m.emoji); }
+
+  // "Sam is typing…": while there is text in the box, a small note goes out at most every 2 seconds.
+  // Each note keeps that person's line up for 3.5 seconds; their message, or silence, clears it.
+  const typingBy = new Map(), typingIn = limiter(10, 2000);
+  let typedAt = 0, typingT;
+  $("cin").addEventListener("input", () => {
+    if (linkStatus !== "connected" || !$("cin").value.trim() || Date.now() - typedAt < 2000) return;
+    typedAt = Date.now(); send({ type: "typing" });
+  });
+  function onTyping(m) { if (!typingIn()) return; typingBy.set(nameOf(m), Date.now()); renderTyping(); }
+  function renderTyping() {
+    const t = Date.now();
+    for (const [k, at] of typingBy) if (t - at > 3500) typingBy.delete(k);
+    const n = [...typingBy.keys()];
+    $("typing").hidden = !n.length;
+    $("typing").textContent = n.length === 1 ? `${n[0]} is typing…` : n.length === 2 ? `${n[0]} and ${n[1]} are typing…` : "Several people are typing…";
+    clearTimeout(typingT); if (n.length) typingT = setTimeout(renderTyping, 1000);
+  }
+
+  // Your name and picture, saved in this browser. The name is the one the popup uses too,
+  // and a change reaches everyone in the party right away.
+  // partyName is the name the others see in this party; savedName is what's saved for next time.
+  let savedName = "", partyName = "", myAv = "";
+  const myName = () => partyName || savedName || (role === "host" ? "Chris" : "Guest");
+  function renderProfile() {
+    $("pbtn").replaceChildren(avatar(myName(), myAv));
+    if (root.activeElement !== $("pname")) $("pname").value = savedName;
+    const box = $("avs"); box.replaceChildren();
+    ["", ...AVATARS].forEach(a => {
+      const b = document.createElement("button"); b.type = "button"; b.className = a === myAv ? "on" : "";
+      b.title = a ? a : "Initials"; b.setAttribute("aria-label", a ? `Picture ${a}` : "Initials");
+      b.append(avatar(myName(), a));
+      b.onclick = () => { myAv = a; chrome.storage.local.set({ avatar: a }).catch(() => {}); renderProfile(); };
+      box.append(b);
+    });
+  }
+  $("pbtn").onclick = () => { $("prof").hidden = !$("prof").hidden; if (!$("prof").hidden) $("pname").focus(); };
+  $("pname").addEventListener("change", () => {
+    const name = $("pname").value.replace(/\s+/g, " ").trim().slice(0, 20);
+    if (name === savedName) return;
+    savedName = name; chrome.storage.local.set({ name }).catch(() => {});
+    if (name && active) partyName = name;
+    if (name) chrome.runtime.sendMessage({ to: "bg", cmd: "rename", name }).catch(() => {});
+    renderProfile();
+  });
+  chrome.storage.local.get(["name", "avatar"]).then(r => { savedName = (r.name || "").slice(0, 20); myAv = cleanAv(r.avatar); renderProfile(); }).catch(() => renderProfile());
+  chrome.storage.onChanged.addListener((c, area) => {
+    if (area !== "local") return;
+    if (c.name) savedName = (c.name.newValue || "").slice(0, 20);
+    if (c.avatar) myAv = cleanAv(c.avatar.newValue);
+    if (c.name || c.avatar) renderProfile();
+  });
 
   function renderStatus() {
     const map = {
@@ -437,6 +524,7 @@
     else if (m.type === "nav") onNav(m);
     else if (m.type === "chat") onChat(m);
     else if (m.type === "react") onReact(m);
+    else if (m.type === "typing") onTyping(m);
   }
 
   // ------------------------------------------------------------ host only
@@ -614,10 +702,11 @@
   let lastHref = location.href;
   function activate(info) {
     active = true; role = info.role; if (info.partnerName) partner = info.partnerName;
+    partyName = typeof info.name === "string" ? info.name.slice(0, 20) : "";
     if (role === "host") hostOnly = info.hostOnly === true;
     linkStatus = info.status || linkStatus;
     requests = Array.isArray(info.requests) ? info.requests : [];
-    mountUI(); renderStatus(); renderRequests();
+    mountUI(); renderStatus(); renderRequests(); renderProfile();
     timers.forEach(clearInterval);
     askedSync = false;
     timers = [
@@ -638,7 +727,7 @@
     myBuf = false; bufBy.clear(); lastT = -1; stallSince = 0; moving = 0;
     hostEl.remove();
     document.removeEventListener("mousemove", showBtn);
-    openChat(false); setUnread(0); $("log").replaceChildren(); $("floats").replaceChildren();
+    openChat(false); setUnread(0); $("log").replaceChildren(); $("floats").replaceChildren(); typingBy.clear(); renderTyping(); $("prof").hidden = true;
   }
 
   chrome.runtime.onMessage.addListener((m, _sender, reply) => {

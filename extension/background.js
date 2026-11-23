@@ -62,7 +62,7 @@ async function activateTab(tabId) {
   if (!s.party) return false;
   if (s.tabId != null && s.tabId !== tabId) await toTab({ type: "deactivate" }, s.tabId);
   await setState({ tabId });
-  return toTab({ type: "activate", role: s.party.role, partnerName: s.partnerName, status: s.status, requests: s.requests || [], hostOnly: !!s.hostOnly }, tabId);
+  return toTab({ type: "activate", role: s.party.role, name: s.party.name, partnerName: s.partnerName, status: s.status, requests: s.requests || [], hostOnly: !!s.hostOnly }, tabId);
 }
 
 // ------------------------------------------------------------ invite links
@@ -112,7 +112,7 @@ async function handle(m, sender) {
       const room = m.cmd === "start" ? cleanCode(m.room) : "";
       const code = m.cmd === "start" ? (okCode(room) ? room : newCode()) : cleanCode(m.code);
       if (!okCode(code)) return { ok: false, error: "Codes are 3 to 24 letters, numbers or dashes." };
-      const party = { code, role: m.cmd === "start" ? "host" : "guest", name: m.name || (m.cmd === "start" ? "Chris" : "Partner"), id: newId() };
+      const party = { code, role: m.cmd === "start" ? "host" : "guest", name: m.name || (m.cmd === "start" ? "Chris" : "Guest"), id: newId() };
       await setState({ party, status: "connecting", partnerName: null, requests: [], hostOnly: false });
       const ok = await activateTab(m.tabId);
       if (!ok) { await setState({ party: null, tabId: null, status: "idle" }); return { ok: false, error: "Open Netflix, Disney+, Max, Hulu, Prime Video or another supported site in this tab first, then try again." }; }
@@ -183,7 +183,16 @@ async function handle(m, sender) {
         }
       }
       const active = !!s.party && sender.tab && sender.tab.id === s.tabId;
-      return active ? { active, role: s.party.role, partnerName: s.partnerName, status: s.status, requests: s.requests || [], hostOnly: !!s.hostOnly } : { active: false };
+      return active ? { active, role: s.party.role, name: s.party.name, partnerName: s.partnerName, status: s.status, requests: s.requests || [], hostOnly: !!s.hostOnly } : { active: false };
+    }
+    case "rename": {
+      // From the chat panel. Saved with the party too, so a reopened offscreen document uses the new name.
+      const name = String(m.name || "").replace(/\s+/g, " ").trim().slice(0, 20);
+      if (!name || !s.party || !sender.tab || sender.tab.id !== s.tabId) return;
+      await setState(cur => cur.party ? { party: { ...cur.party, name } } : null);
+      await ensureOffscreen();
+      await toOffscreen({ cmd: "rename", name });
+      return;
     }
     case "send":
       if (!s.party || !sender.tab || sender.tab.id !== s.tabId) return;

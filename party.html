@@ -127,6 +127,20 @@
   .chat header button { background: transparent; padding: 2px 10px; font-size: 20px; color: var(--muted); }
   .chatlog { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; font-size: 15px; }
   .chatlog:empty::before { content: "No messages yet"; color: var(--muted); }
+  .chatlog .row { display: flex; gap: 8px; align-items: flex-start; }
+  .chatlog .msg { flex: 1; min-width: 0; }
+  .av { flex: none; width: 28px; height: 28px; border-radius: 50%; display: inline-grid; place-items: center; overflow: hidden;
+    font-size: 12px; font-weight: 600; line-height: 1; color: #fff; background: var(--line); }
+  .av.emo { font-size: 17px; }
+  .chat header .hb { display: flex; gap: 2px; align-items: center; }
+  .chat header #profBtn { padding: 2px 6px; }
+  .chat header #profBtn .av { width: 26px; height: 26px; font-size: 11px; }
+  .prof { padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+  .prof label { font-size: 12px; color: var(--muted); }
+  .avs { display: flex; flex-wrap: wrap; gap: 4px; }
+  .avs button { background: transparent; padding: 2px; border-radius: 50%; border: 2px solid transparent; line-height: 0; }
+  .avs button.on { border-color: var(--accent); }
+  .typing { padding: 0 14px 6px; font-size: 12px; color: var(--muted); font-style: italic; }
   .chatlog .who { font-size: 12px; color: var(--muted); }
   .chatlog .me .who { color: var(--accent); }
   .chatlog .txt { overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -226,8 +240,15 @@
   <div class="floats" id="floats"></div>
   <button id="chatBtn" class="chatbtn" aria-label="Chat">💬<span id="chatBadge" class="badge hidden"></span></button>
   <aside id="chat" class="chat">
-    <header><span>Chat</span><button id="chatClose" aria-label="Close chat">×</button></header>
+    <header><span>Chat</span><span class="hb"><button id="profBtn" aria-label="Your name and picture" title="Your name and picture"></button><button id="chatClose" aria-label="Close chat">×</button></span></header>
+    <div id="prof" class="prof hidden">
+      <label for="profName">Your name</label>
+      <input id="profName" type="text" maxlength="24" placeholder="Your name" autocomplete="nickname" spellcheck="false">
+      <label>Your picture</label>
+      <div id="avs" class="avs"></div>
+    </div>
     <div id="chatLog" class="chatlog"></div>
+    <div id="typing" class="typing hidden"></div>
     <div id="reacts" class="reacts"></div>
     <form id="chatForm"><input id="chatInput" type="text" maxlength="500" placeholder="Message" autocomplete="off" enterkeyhint="send"><button class="primary">Send</button></form>
   </aside>
@@ -268,9 +289,21 @@
   const cleanText = s => Array.from((typeof s === "string" ? s : "").slice(0, 4000).replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, " ").trim()).slice(0, 500).join("");
   // At most n calls per ms; anything faster is dropped.
   const limiter = (n, ms) => { let seen = []; return () => { const t = Date.now(); seen = seen.filter(x => t - x < ms); if (seen.length >= n) return false; seen.push(t); return true; }; };
+  // Avatars are made here, nothing is fetched: a colored circle with initials, or one emoji from this fixed set.
+  // The color comes from the name, so the same name always gets the same color on every screen.
+  const AVATARS = ["😀", "😎", "🤓", "🥳", "😺", "🐶", "🦊", "🐼", "🐸", "🐵", "🦄", "🐙", "👻", "🤖", "👽", "🍿"];
+  const cleanAv = a => AVATARS.includes(a) ? a : "";
+  const initials = n => (n.trim().split(/\s+/).slice(0, 2).map(w => Array.from(w)[0] || "").join("") || "?").toUpperCase();
+  const colorOf = n => { let h = 0; for (const c of n) h = (h * 31 + c.codePointAt(0)) >>> 0; return `hsl(${h % 360} 55% 42%)`; };
+  function avatar(name, av) {
+    const el = document.createElement("span"); el.className = "av";
+    if (cleanAv(av)) { el.textContent = av; el.classList.add("emo"); } else { el.textContent = initials(name); el.style.background = colorOf(name); }
+    return el;
+  }
 
-  // out.chat(text) and out.react(emoji) send to the other side. Returns what the page needs to show incoming ones.
-  function makeChat(out) {
+  // out.chat(text, av), out.react(emoji) and out.typing() send to the other side; out.rename(name), if given,
+  // tells it about a new name. Your name and picture are saved in this browser. Returns what the page needs to show incoming ones.
+  function makeChat(out, defaultName) {
     const ui = $("chatUI"), log = $("chatLog"), input = $("chatInput");
     let unread = 0, on = false;
     const isOpen = () => $("chat").classList.contains("open");
@@ -279,12 +312,14 @@
       $("chat").classList.toggle("open", yes); show($("chatBtn"), !yes);
       if (yes) { setUnread(0); log.scrollTop = log.scrollHeight; if (!input.disabled) input.focus(); } else input.blur();
     };
-    function add(who, text, mine) {
-      const row = document.createElement("div"); if (mine) row.className = "me";
+    function add(who, text, mine, av) {
+      const row = document.createElement("div"); row.className = mine ? "row me" : "row";
+      const msg = document.createElement("div"); msg.className = "msg";
       const head = document.createElement("div"); head.className = "who";
-      head.textContent = `${who} · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+      head.textContent = `${mine ? "You" : who} · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
       const body = document.createElement("div"); body.className = "txt"; body.textContent = text;
-      row.append(head, body); log.append(row);
+      msg.append(head, body); row.append(avatar(who, av), msg); log.append(row);
+      if (!mine) { typingBy.delete(who); renderTyping(); }
       while (log.childElementCount > 200) log.firstElementChild.remove();
       log.scrollTop = log.scrollHeight;
       if (mine || isOpen()) return;
@@ -298,6 +333,46 @@
       $("floats").append(el);
       setTimeout(() => el.remove(), 2500);
     }
+    // "Sam is typing…": while there is text in the box, a small note goes out at most every 2 seconds.
+    // Each note keeps that person's line up for 3.5 seconds; their message, or silence, clears it.
+    const typingBy = new Map();
+    let typedAt = 0, typingT;
+    input.addEventListener("input", () => {
+      if (!on || !input.value.trim() || Date.now() - typedAt < 2000) return;
+      typedAt = Date.now(); out.typing();
+    });
+    function typing(who) { typingBy.set(who, Date.now()); renderTyping(); }
+    function renderTyping() {
+      const t = Date.now();
+      for (const [k, at] of typingBy) if (t - at > 3500) typingBy.delete(k);
+      const n = [...typingBy.keys()];
+      show($("typing"), n.length > 0);
+      $("typing").textContent = n.length === 1 ? `${n[0]} is typing…` : n.length === 2 ? `${n[0]} and ${n[1]} are typing…` : "Several people are typing…";
+      clearTimeout(typingT); if (n.length) typingT = setTimeout(renderTyping, 1000);
+    }
+    // Your name and picture.
+    const prof = { name: cleanName(store.get("wp-name") || defaultName), av: cleanAv(store.get("wp-avatar")) };
+    function renderProfile() {
+      $("profBtn").replaceChildren(avatar(prof.name, prof.av));
+      if (document.activeElement !== $("profName")) $("profName").value = prof.name;
+      $("avs").replaceChildren(...["", ...AVATARS].map(a => {
+        const b = document.createElement("button"); b.type = "button"; if (a === prof.av) b.className = "on";
+        b.setAttribute("aria-label", a ? `Picture ${a}` : "Initials"); b.title = a || "Initials";
+        b.append(avatar(prof.name, a));
+        b.onclick = () => { prof.av = a; store.set("wp-avatar", a); renderProfile(); };
+        return b;
+      }));
+    }
+    const setName = name => {
+      name = cleanName(name);
+      if (name === prof.name) return;
+      prof.name = name; store.set("wp-name", name); renderProfile();
+      if (out.rename) out.rename(name);
+    };
+    $("profBtn").onclick = () => { const hide = !$("prof").classList.contains("hidden"); show($("prof"), !hide); if (!hide) $("profName").focus(); };
+    $("profName").addEventListener("change", () => setName($("profName").value));
+    $("profName").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); $("profName").blur(); } });
+    renderProfile();
     const enable = yes => { on = yes; input.disabled = !yes; input.placeholder = yes ? "Message" : "Not connected…"; if (yes) show(ui); };
     const reactOut = limiter(5, 1000);
     REACTIONS.forEach(emoji => {
@@ -312,7 +387,7 @@
       e.preventDefault();
       const text = cleanText(input.value);
       if (!text || !on) return;
-      input.value = ""; out.chat(text); add("You", text, true);
+      input.value = ""; typedAt = 0; out.chat(text, prof.av); add(prof.name, text, true, prof.av);
     };
     // In fullscreen only the fullscreen element's own contents are drawn, so the chat moves into it.
     const refit = () => {
@@ -322,7 +397,7 @@
     };
     document.addEventListener("fullscreenchange", refit); document.addEventListener("webkitfullscreenchange", refit);
     enable(false);
-    return { add, float, enable, btn: $("chatBtn") };
+    return { add, float, enable, typing, setName, me: prof, btn: $("chatBtn") };
   }
 
   function ytId(url) {
@@ -451,15 +526,27 @@
     // Chat goes through the host: it shows each message and passes it on to the other viewers,
     // under the name the host allowed, so a viewer can't speak as someone else.
     const chat = makeChat({
-      chat: text => broadcast({ type: "chat", name: HOST_NAME, text }),
+      chat: (text, av) => broadcast({ type: "chat", name: chat.me.name, av, text }),
       react: emoji => broadcast({ type: "react", emoji }),
-    });
+      typing: () => broadcast({ type: "typing", name: chat.me.name }),
+    }, HOST_NAME);
     chat.enable(true);
     const relay = (from, msg) => viewers.forEach(v => { if (v !== from) send(v, msg); });
     function onChat(me, m) {
       const text = cleanText(m.text);
       if (!text || !me.limit()) return;
-      chat.add(me.name, text, false); relay(me, { type: "chat", name: me.name, text });
+      const av = cleanAv(m.av);
+      chat.add(me.name, text, false, av); relay(me, { type: "chat", name: me.name, av, text });
+    }
+    function onTyping(me) {
+      if (Date.now() - (me.typedAt || 0) < 1500) return;
+      me.typedAt = Date.now();
+      chat.typing(me.name); relay(me, { type: "typing", name: me.name });
+    }
+    // A viewer changed their name in the chat. Their next messages carry it.
+    function onRename(me, m) {
+      if (Date.now() - (me.renamedAt || 0) < 2000) return;
+      me.renamedAt = Date.now(); me.name = cleanName(m.name); setStatus();
     }
     function onReact(me, m) {
       if (!REACTIONS.includes(m.emoji) || !me.limit()) return;
@@ -653,6 +740,8 @@
           else if (m.type === "ready") onStall(conn.peer, false);
           else if (m.type === "chat") onChat(me, m);
           else if (m.type === "react") onReact(me, m);
+          else if (m.type === "typing") onTyping(me);
+          else if (m.type === "rename") onRename(me, m);
           else if (m.type === "quality") { if (me.limit()) { me.quality = Quality.clean(m.q); tune(me); } }
           else if (m.type === "want-stream") {
             const v = me;
@@ -717,7 +806,12 @@
     };
     const status = (txt, on) => { $("vStatus").textContent = txt; $("vDot").className = "dot " + (on ? "on" : ""); };
     const say = msg => { if (conn && conn.open) conn.send(msg); };
-    const chat = makeChat({ chat: text => say({ type: "chat", text }), react: emoji => say({ type: "react", emoji }) });
+    const chat = makeChat({
+      chat: (text, av) => say({ type: "chat", text, av }),
+      react: emoji => say({ type: "react", emoji }),
+      typing: () => say({ type: "typing" }),
+      rename: name => { myName = name; $("nameInput").value = name; say({ type: "rename", name }); },
+    }, "");
     const chatIn = limiter(20, 4000);
 
     // ---- join gate (unlocks sound on iPhone/iPad)
@@ -949,7 +1043,8 @@
         }
         else if (m.type === "pong") onPong(m);
         else if (m.type === "state") onState(m.s);
-        else if (m.type === "chat") { const text = cleanText(m.text); if (text && chatIn()) chat.add(cleanName(m.name), text, false); }
+        else if (m.type === "chat") { const text = cleanText(m.text); if (text && chatIn()) chat.add(cleanName(m.name), text, false, cleanAv(m.av)); }
+        else if (m.type === "typing") { if (chatIn()) chat.typing(cleanName(m.name)); }
         else if (m.type === "react") { if (REACTIONS.includes(m.emoji) && chatIn()) chat.float(m.emoji); }
         else if (m.type === "ended") { status(`${HOST_NAME} closed the party`, false); }
       });
@@ -967,7 +1062,7 @@
     $("nameForm").onsubmit = e => {
       e.preventDefault();
       myName = cleanName($("nameInput").value);
-      store.set("wp-name", myName);
+      store.set("wp-name", myName); chat.setName(myName);
       joined = true;
       [pv, sv].forEach(v => { const p = v.play(); p && p.catch(() => {}); });
       overlay("Connecting…");
