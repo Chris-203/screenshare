@@ -342,6 +342,8 @@ async function extensionSuite(hub, web) {
     // video keeps playing as the ad would. The other side has to wait, and both pick up together after.
     await adBreak("Guest", guest.page, host.page, guest.page);
     await adBreak("Host", host.page, host.page, guest.page);
+    // Disney+ marks its ads with a badge inside a shadow root beside the player, not around the video.
+    await adBreak("Guest", guest.page, host.page, guest.page, "disney");
 
     // Next episode: the host moves to another video and starts it; the guest follows by itself.
     const next = SITE.replace("sync-test", "sync-test-2");
@@ -567,9 +569,20 @@ async function hostOnly(suite, who, host, viewer, setHostOnly) {
 }
 
 // One person's ad break, from start to end. `hostPage` and `guestPage` are only for the drift check.
-async function adBreak(who, inAd, hostPage, guestPage) {
+async function adBreak(who, inAd, hostPage, guestPage, style = "youtube") {
   const other = inAd === hostPage ? guestPage : hostPage;
-  const setAd = on => inAd.evaluate(on => document.querySelector(".html5-video-player").classList.toggle("ad-showing", on), on);
+  const setAd = style === "disney"
+    ? on => inAd.evaluate(on => {
+      if (!on) return document.getElementById("fake-player-ui").remove();
+      const ui = document.createElement("div");
+      ui.id = "fake-player-ui";
+      document.body.appendChild(ui);
+      const badge = document.createElement("div");
+      badge.setAttribute("data-qa", "ad-badge-overlay.badge"); badge.textContent = "Ad";
+      ui.attachShadow({ mode: "open" }).appendChild(document.createElement("ad-badge-overlay")).attachShadow({ mode: "open" }).appendChild(badge);
+    }, on)
+    : on => inAd.evaluate(on => document.querySelector(".html5-video-player").classList.toggle("ad-showing", on), on);
+  if (style !== "youtube") who = `${who} (${style})`;
   await setAd(true);
   await sleep(2500);
   const [a, w] = await Promise.all([probe(inAd), probe(other)]);

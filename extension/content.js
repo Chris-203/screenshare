@@ -721,6 +721,7 @@
   // the page, and ad wording ("Ad 1 of 2", "Ad · 0:30", "Your show will resume…") near the video.
   const AD_SELECTORS = [
     ".html5-video-player.ad-showing", ".html5-video-player.ad-interrupting",                            // YouTube
+    "[data-qa='ad-badge-overlay.badge']", ".progress-bar__ad-playing",                                       // Disney+
     ".atvwebplayersdk-ad-timer", ".atvwebplayersdk-ad-timer-text", ".atvwebplayersdk-adtimeindicator-text", // Prime Video
     "[data-uia^='ads-']", "[data-uia*='ad-break']", "[data-uia*='advert']",                              // Netflix with ads
     ".AdUnitView", ".ad-countdown", "[class*='AdCountdown']", "[class*='adCountdown']",                   // Hulu, Peacock and others
@@ -788,11 +789,24 @@
     }
     return frozen && other;
   }
+  // A visible match for `sel` anywhere on the page, including inside open shadow roots. Disney+ puts its
+  // "Ad" badge in a shadow root next to the player rather than around the video, so neither a plain
+  // querySelectorAll nor the text check near the video sees it.
+  function deepFind(sel) {
+    const roots = [document];
+    let budget = 20000;
+    while (roots.length) {
+      const root = roots.pop();
+      for (const el of root.querySelectorAll(sel)) if (visible(el)) return true;
+      for (const el of root.querySelectorAll("*")) { if (el.shadowRoot) roots.push(el.shadowRoot); if (--budget <= 0) return false; }
+    }
+    return false;
+  }
   function adOnPage() {
     if (!video) return false;   // an ad needs a player; this keeps menus and account pages out of it
     try {
       if (adInOtherVideo()) return true;
-      for (const el of document.querySelectorAll(AD_SELECTORS)) if (visible(el)) return true;
+      if (deepFind(AD_SELECTORS)) return true;
       return !!video && adText(playerRoot(video));
     } catch { return false; }
   }
