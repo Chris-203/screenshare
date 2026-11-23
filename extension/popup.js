@@ -22,7 +22,7 @@ async function render() {
   show($("inParty"), !!s.party);
   if (!s.party) return;
   $("codeOut").textContent = s.party.code;
-  $("codeHint").textContent = s.party.role === "host" ? "Send this code to everyone joining" : "You joined party";
+  $("codeHint").textContent = s.party.role === "host" ? "Send the invite link or this code to everyone joining" : "You joined party";
   $("stat").textContent = (LABELS[s.status] || (() => s.status))(s.partnerName);
   $("dot").className = "dot" + (s.status === "connected" ? " on" : "");
   show($("bind"), !s.isPartyTab);
@@ -81,5 +81,13 @@ $("join").onclick = async () => {
 $("code").addEventListener("keydown", e => { if (e.key === "Enter") $("join").click(); });
 $("bind").onclick = async () => { err(); const r = await bg({ cmd: "bindTab", tabId }); if (!r.ok) err(r.error); render(); };
 $("copy").onclick = async () => { await navigator.clipboard.writeText($("codeOut").textContent); $("copy").textContent = "Copied"; setTimeout(() => $("copy").textContent = "Copy code", 1200); };
+// The link opens the party page on the site: with Watch Sync installed it joins and opens this title, without it shows how to install.
+$("invite").onclick = async () => {
+  err();
+  const r = await bg({ cmd: "invite" });
+  if (!r || !r.ok) return err("Start or join a party first.");
+  await navigator.clipboard.writeText(r.link);
+  $("invite").textContent = "Copied"; setTimeout(() => $("invite").textContent = "Copy invite link", 1200);
+};
 $("hostOnly").onchange = async () => { await bg({ cmd: "setControl", hostOnly: $("hostOnly").checked }); render(); };
 $("leave").onclick = async () => { await bg({ cmd: "leave" }); render(); };

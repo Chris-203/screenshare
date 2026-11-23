@@ -9,7 +9,7 @@ Everything is static: no build step, no bundler, and no package.json outside the
 |---|---|
 | `index.html` | Screen share. Host captures a screen with `getDisplayMedia` and calls each viewer over WebRTC. |
 | `party.html` | Watch party. Synced YouTube, direct video URL, or a local file (the viewer plays their own copy, or the host streams it). |
-| `sync.html` | Install and usage page for the extension. Static, no script. |
+| `sync.html` | Install and usage page for the extension, and the target of its invite links (`sync.html?join=CODE&to=PAGE`). One small inline script that shows install steps when the extension doesn't answer. |
 | `extension/` | Watch Sync, a Manifest V3 extension for Chrome and Edge that syncs play, pause and seek on streaming sites. |
 | `extension/ice.js` | ICE server config for all three tools. Fetches TURN credentials from the Worker, falls back to PeerJS defaults. |
 | `quality.js` | Viewer quality picker (size and bitrate, Auto by default) for the screen share and the watch party's file stream. The viewer sends its pick; the host applies it to that viewer's sender only. |
@@ -31,7 +31,8 @@ The extension has four contexts that only talk through `chrome.runtime` messages
 - `offscreen.js` with `offscreen.html`: holds the PeerJS connections so they survive tab navigation. The host is the hub: each guest connects only to the host, waits for the host's Allow, and the host relays one guest's messages to the others. The host keeps a clock offset per guest and every guest keeps one for the host, so timestamps are translated into the local clock at each hop.
 - `content.js`: runs in the top frame of the sites listed in `manifest.json`. Watches the page's `<video>`, sends local play, pause and seek, applies the partner's. Its UI is in a closed shadow root.
 - `netflix-main.js`: runs in Netflix's own page context (`"world": "MAIN"`) because setting `currentTime` directly crashes the Netflix player. `content.js` reaches it with `window.postMessage`.
-- `popup.js` with `popup.html`: start, join and leave.
+- `popup.js` with `popup.html`: start, join, copy the invite link, and leave.
+- `invite.js`: runs only on the deployed `sync.html`. Passes an invite link's code and page to the service worker, which opens that page (only a supported streaming site) in the same tab and joins once `content.js` there says hello.
 
 ## Rules for changes
 
@@ -63,7 +64,7 @@ cd .github/sync-tests && npm ci && npx playwright install chromium
 node run.mjs            # or: node run.mjs party | node run.mjs extension
 ```
 
-Two separate headless Chromium browsers play the same test video, one as host and one as viewer, first through `party.html` (video link mode) and then through the extension on a stand-in page answered locally for a youtube.com address. Play, pause and skips are made from both sides, then the extension run adds an ad break on each side (the stand-in page marks it the way YouTube does) and the host moving to a next video, which the guest must follow. Both suites end with "Host only" mode, where the viewer's pause and skip must be undone and the host must not move. The run fails if the two positions are further apart than the limits at the top of `run.mjs` (150 ms playing and 300 ms paused for the page, 500 ms and 650 ms for the extension). `node run.mjs party --fault` drops the sync messages on purpose and must exit 1; CI runs that too.
+Two separate headless Chromium browsers play the same test video, one as host and one as viewer, first through `party.html` (video link mode) and then through the extension on a stand-in page answered locally for a youtube.com address. Play, pause and skips are made from both sides, then the extension run adds an ad break on each side (the stand-in page marks it the way YouTube does), the host moving to a next video, which the guest must follow, and each side's video stalling (playback rate 0), which the other side must wait for. Both suites then run "Host only" mode, where the viewer's pause and skip must be undone and the host must not move. The extension run ends with the guest joining from an invite link (the invite page is answered locally from `sync.html`), and checks that a browser without the extension gets the install steps. The run fails if the two positions are further apart than the limits at the top of `run.mjs` (150 ms playing and 300 ms paused for the page, 500 ms and 650 ms for the extension). `node run.mjs party --fault` drops the sync messages on purpose and must exit 1; CI runs that too.
 
 `party.html` and the extension scripts run unmodified. Only PeerJS is replaced: `fake-peer.js` carries the same messages through a local hub with 60 to 100 ms of delay each way, and the page test also sets the viewer's clock 4.3 seconds ahead. So these tests cover the sync logic. They do not cover WebRTC, the PeerJS broker, YouTube mode, streaming a local file, Netflix's player path, Safari, or reconnecting. If a change makes sync looser on purpose, change the limit in `run.mjs` in the same pull request and say why. If you use a PeerJS feature the tests have not seen (a new event or method), add it to `fake-peer.js`.
 

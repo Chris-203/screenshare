@@ -472,7 +472,8 @@
       document.title = (asking ? `(${asking} asking) ` : "") + "Watch Party";
       $("hostStatus").textContent = n === 0 ? "Waiting for her to join" : n === 1 ? "1 person in the party" : `${n} people in the party`;
       $("hostDot").className = "dot " + (n ? "on" : "");
-      $("syncInfo").textContent = stalled.size ? "Waiting for her video to load…" : "";
+      const slow = [...stalled].map(id => viewers.get(id)).filter(v => v && v.name).map(v => v.name);
+      $("syncInfo").textContent = stalled.size ? `Waiting for ${slow.length ? slow.join(", ") : "her video"} to buffer…` : "";
     };
 
     // ---- tabs
