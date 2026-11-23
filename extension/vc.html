@@ -25,7 +25,7 @@
   .wait { position: absolute; top: 6px; left: 6px; color: var(--muted); font-size: 11px; background: rgba(0,0,0,.55); padding: 2px 6px; border-radius: 6px; }
   /* Camera and mic float over the bottom of the tiles and only show while the pointer is over the box. */
   #bar { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); display: flex; gap: 6px; opacity: 0; transition: opacity .2s; }
-  body.hov:not(.bubbles) #bar, #bar:focus-within, body.hint #bar { opacity: 1; }
+  body.hov:not(.bubbles) #bar, #bar:has(:focus-visible), body.hint #bar { opacity: 1; }
   #bar button { all: unset; cursor: pointer; text-align: center; font-size: 15px; line-height: 1; padding: 7px 10px; border-radius: 999px; background: rgba(0,0,0,.7); }
   #bar button.on { background: var(--accent); }
   #bar button:focus-visible { outline: 2px solid var(--accent); }
@@ -44,13 +44,20 @@
   .bubbles .tile.drag { cursor: grabbing; }
   .bubbles .name { left: 0; right: 0; bottom: 9%; justify-content: center; }
   .bubbles .wait { left: 50%; top: 14%; transform: translateX(-50%); }
-  .bubbles .rz { display: block; position: absolute; right: 13%; bottom: 13%; width: 14px; height: 14px; cursor: nwse-resize; opacity: 0; transition: opacity .2s;
-    border-right: 2px solid #eceef2; border-bottom: 2px solid #eceef2; border-radius: 0 0 4px 0; }
-  .bubbles #bar { position: absolute; bottom: 26%; }
-  .bubbles #bar, .bubbles #ctl { opacity: 0; transition: opacity .2s; }
-  .bubbles .tile.hov .rz, .bubbles .tile.hov #bar, .bubbles .tile.hov #ctl, .bubbles .tile.drag .rz, .bubbles #bar:focus-within, .bubbles #ctl:focus-within, body.bubbles.hint #bar { opacity: 1; }
-  .bubbles #ctl { display: flex; gap: 3px; position: absolute; top: 13%; left: 50%; transform: translateX(-50%); }
-  #ctl button { all: unset; cursor: pointer; width: 20px; height: 18px; border-radius: 6px; text-align: center; font-size: 13px; font-weight: 600; line-height: 18px; background: rgba(0,0,0,.65); }
+  /* The resize handle sits on the bubble's edge, at the lower right. */
+  .bubbles .rz { display: block; position: absolute; right: calc(14.6% - 4px); bottom: calc(14.6% - 4px); width: 18px; height: 18px; border-radius: 50%;
+    cursor: nwse-resize; opacity: 0; transition: opacity .2s; background: #eceef2; box-shadow: 0 0 0 3px rgba(0,0,0,.45); }
+  .bubbles .tile.hov .rz, .bubbles .tile.drag .rz { opacity: 1; }
+  /* Your buttons, as one small pill under your own bubble (placed by vc.js), shown while you point at it. */
+  #tools { display: none; }
+  .bubbles #tools { display: flex; align-items: center; gap: 4px; position: absolute; padding: 4px; border-radius: 999px; background: rgba(14,15,18,.92);
+    border: 1px solid var(--line); opacity: 0; pointer-events: none; transition: opacity .2s; white-space: nowrap; }
+  body.mehov #tools, #tools:has(:focus-visible), body.bubbles.hint #tools { opacity: 1; pointer-events: auto; }
+  .bubbles #tools #bar { position: static; transform: none; opacity: 1; gap: 4px; }
+  .bubbles #tools #ctl { display: flex; gap: 2px; padding-left: 4px; border-left: 1px solid var(--line); }
+  .bubbles #tools button { padding: 6px 8px; }
+  #ctl button { all: unset; cursor: pointer; min-width: 22px; height: 26px; border-radius: 999px; text-align: center; font-size: 14px; font-weight: 600; line-height: 26px; color: var(--text); }
+  #ctl button:hover { background: #2a2d35; }
   #ctl button:focus-visible { outline: 2px solid var(--accent); }
   .bubbles #note { position: absolute; max-width: 220px; padding: 6px 8px; border-radius: 8px; background: rgba(14,15,18,.92); color: var(--text); }
 </style>
@@ -59,6 +66,7 @@
 <div id="wrap">
   <div id="tiles"></div>
   <div id="note"></div>
+  <div id="tools"></div>
   <div id="ctl"><button id="bmin" title="Hide videos (you stay in the call)" aria-label="Hide videos">–</button><button id="blay" title="Put everyone in one box" aria-label="One box">⧉</button><button id="bx" title="Leave video chat" aria-label="Leave video chat">×</button></div>
   <div id="bar">
     <button id="cam" title="Turn camera on" aria-label="Camera" aria-pressed="false">📷</button>

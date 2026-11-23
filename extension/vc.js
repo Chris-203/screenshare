@@ -42,9 +42,11 @@ function makeTile(name, mine) {
   // Only used as separate bubbles: a corner to resize this bubble by.
   const rz = document.createElement("div"); rz.className = "rz"; rz.title = "Drag to resize";
   tile.append(video, av, label, rz);
-  const setName = n => { text.textContent = n; letter.textContent = Array.from(n)[0].toUpperCase(); };
+  // With the camera off, the circle shows the first letter of the person's name (yours too, not "Y" for "You").
+  const setLetter = n => { letter.textContent = (Array.from(cleanName(n))[0] || "?").toUpperCase(); };
+  const setName = n => { text.textContent = n; setLetter(n); };
   setName(name);
-  return { tile, video, setName, setWait: on => {
+  return { tile, video, setName, setLetter, setWait: on => {
     let w = tile.querySelector(".wait");
     if (on && !w) { w = document.createElement("div"); w.className = "wait"; w.textContent = "Connecting…"; tile.append(w); }
     if (!on && w) w.remove();
@@ -340,6 +342,7 @@ async function hello() {
   const was = up && me === r.id;
   if (me && me !== r.id) dropAll();
   me = r.id;
+  if (r.name) mine.setLetter(r.name);
   up = !!r.up;
   if (was) return;                    // already in; a second join would make everyone reconnect to us
   if (up) { if ($("note").textContent.startsWith("Video chat starts")) note(""); announce(); }
@@ -368,26 +371,36 @@ const clampSpot = sp => {
   return sp;
 };
 function placeBubbles() {
-  let prev = null;
+  let prev = null, prevEl = null;
   const shapes = [];
   for (const el of $("tiles").children) {
     let sp = spots.get(el);
     if (!sp) {
       // A new bubble goes under the one before it, or starts a new column at the bottom of the screen.
       const s = Math.round(Math.max(BUBBLE_MIN, Math.min(origin.w, 200)));
-      sp = prev ? { x: prev.x, y: prev.y + prev.s + GAP, s } : { x: origin.x, y: origin.y, s };
+      // Under your own bubble, leave room for your buttons.
+      const gap = prevEl === mine.tile ? GAP + $("tools").offsetHeight + 6 : GAP;
+      sp = prev ? { x: prev.x, y: prev.y + prev.s + gap, s } : { x: origin.x, y: origin.y, s };
       if (prev && sp.y + s > innerHeight) { sp.x = prev.x + prev.s + GAP; sp.y = origin.y; }
       spots.set(el, sp);
     }
     clampSpot(sp);
     el.style.left = `${sp.x}px`; el.style.top = `${sp.y}px`; el.style.width = el.style.height = `${sp.s}px`;
     shapes.push({ x: sp.x, y: sp.y, w: sp.s, h: sp.s, round: true });
-    prev = sp;
+    prev = sp; prevEl = el;
   }
-  const n = $("note");
+  // Your buttons go in a pill just under your bubble (or just above it, at the bottom of the screen),
+  // and a note under that. Both count as part of the bubbles for the pointer.
+  const me = spots.get(mine.tile), t = $("tools"), n = $("note");
+  let below = me.y + me.s + 6;
+  const tw = t.offsetWidth, th = t.offsetHeight;
+  const tx = Math.max(0, Math.min(me.x + me.s / 2 - tw / 2, innerWidth - tw));
+  const ty = below + th <= innerHeight ? below : Math.max(0, me.y - th - 6);
+  t.style.left = `${tx}px`; t.style.top = `${ty}px`;
+  shapes.push({ x: tx, y: ty, w: tw, h: th, round: false });
+  if (ty >= below) below = ty + th + 4;
   if (n.textContent) {
-    const me = spots.get(mine.tile);
-    n.style.left = `${me.x}px`; n.style.top = `${Math.min(me.y + me.s + 6, innerHeight - n.offsetHeight)}px`;
+    n.style.left = `${me.x}px`; n.style.top = `${Math.min(below, innerHeight - n.offsetHeight)}px`;
     const r = n.getBoundingClientRect();
     shapes.push({ x: r.left, y: r.top, w: r.width, h: r.height, round: false });
   }
@@ -398,9 +411,10 @@ function setLayout(mode, o) {
   if (o) origin = { x: +o.x || 18, y: +o.y || 18, w: +o.w || 160 };
   document.body.classList.toggle("bubbles", layout === "bubbles");
   // The camera and mic buttons sit inside your own bubble, or float over the bottom of the box.
-  (layout === "bubbles" ? mine.tile : document.body).append($("bar"));
+  if (layout === "bubbles") $("tools").append($("bar"), $("ctl"));
+  else { document.body.append($("bar")); $("wrap").append($("ctl")); }
   for (const el of $("tiles").children) if (layout === "box") el.removeAttribute("style");
-  $("note").removeAttribute("style");
+  $("note").removeAttribute("style"); $("tools").removeAttribute("style");
   lastH = 0;
   fit();
 }
@@ -424,13 +438,15 @@ document.addEventListener("pointerdown", e => {
 // Hover is tracked by hand (the "hov" class) rather than with :hover, which stays stuck on once
 // content.js takes the pointer away from the frame. Off the bubbles, the pointer goes back to the page.
 let hovTile = null, inside = false;
-function hover(el) { if (hovTile === el) return; if (hovTile) hovTile.classList.remove("hov"); hovTile = el; if (el) el.classList.add("hov"); }
+function hover(el) { if (!el) document.body.classList.remove("mehov"); if (hovTile === el) return; if (hovTile) hovTile.classList.remove("hov"); hovTile = el; if (el) el.classList.add("hov"); }
 function inFrame(on) { if (inside === on) return; inside = on; document.body.classList.toggle("hov", on); toParent({ wsvc: "hover", on }); }
 const cold = () => { if (layout !== "bubbles" || dragging) return; hover(null); inFrame(false); toParent({ wsvc: "cold" }); };
 document.addEventListener("pointermove", e => {
   if (dragging) return;
   inFrame(true); hover(e.target.closest(".tile"));
-  if (!e.target.closest(".tile, #note")) cold();
+  // Your buttons show while you point at your own bubble or at the buttons themselves.
+  document.body.classList.toggle("mehov", !!e.target.closest(".tile.me, #tools"));
+  if (!e.target.closest(".tile, #note, #tools")) cold();
 });
 const left = () => { if (dragging) return; hover(null); inFrame(false); cold(); };
 document.documentElement.addEventListener("pointerleave", left);
@@ -454,7 +470,6 @@ function leave() {
 window.addEventListener("pagehide", () => { if (up) sig("*", { t: "bye" }); });
 
 (async () => {
-  mine.tile.append($("ctl"));
   renderMine();
   toParent({ wsvc: "ready" });
   await hello();
