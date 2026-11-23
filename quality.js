@@ -25,6 +25,32 @@
     return { res, mbps: Math.min(mbps, maxMbps) };
   }
 
+  // Put H.264 first in an offer or answer (PeerJS sdpTransform). Without this, Chrome
+  // picks VP8, which Windows encodes in software and iPhones and iPads decode in software:
+  // both sides heat up, and after a few minutes the frames come late and the share lags.
+  // H.264 uses the graphics chip on both ends. If the other side lacks it, nothing changes.
+  function preferH264(sdp) {
+    const lines = sdp.split("\r\n");
+    const m = lines.findIndex(l => l.startsWith("m=video "));
+    if (m < 0) return sdp;
+    let end = lines.findIndex((l, i) => i > m && l.startsWith("m="));
+    if (end < 0) end = lines.length;
+    const sec = lines.slice(m, end), map = {}, fmtp = {};
+    sec.forEach(l => {
+      let x = /^a=rtpmap:(\d+) ([^/]+)/.exec(l); if (x) map[x[1]] = x[2].toUpperCase();
+      x = /^a=fmtp:(\d+) (.*)/.exec(l); if (x) fmtp[x[1]] = x[2];
+    });
+    const parts = lines[m].split(" "), pts = parts.slice(3);
+    // Packetization mode 1 is what browsers expect; constrained baseline (42e0) is the most widely accelerated.
+    const rank = pt => map[pt] !== "H264" ? 9 : !/packetization-mode=1/.test(fmtp[pt] || "") ? 3 : /profile-level-id=42e0/i.test(fmtp[pt] || "") ? 0 : 1;
+    const h264 = pts.filter(pt => rank(pt) < 9).sort((a, b) => rank(a) - rank(b));
+    if (!h264.length) return sdp;
+    const rtx = pts.filter(pt => map[pt] === "RTX" && h264.some(h => new RegExp("apt=" + h + "(;|$)").test(fmtp[pt] || "")));
+    const first = h264.concat(rtx);
+    lines[m] = parts.slice(0, 3).concat(first, pts.filter(pt => !first.includes(pt))).join(" ");
+    return lines.join("\r\n");
+  }
+
   // Host side: apply a viewer's choice to the video sender of their call.
   function apply(pc, q, maxMbps, extra) {
     if (!pc) return;
@@ -88,5 +114,5 @@
     return { get: () => q, hide: () => panel.classList.add("hidden") };
   }
 
-  window.Quality = { PHONE, clean, resolve, apply, mount };
+  window.Quality = { PHONE, clean, resolve, apply, mount, preferH264 };
 })();
