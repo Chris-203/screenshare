@@ -381,6 +381,7 @@ async function extensionSuite(hub, web) {
       async () => (await host.once({ cmd: "status" })).partnerName);
 
     await videoChat(host, guest);
+    await bubbleControls(host);
 
     // Invite link: the guest leaves, the host moves on to another title and copies the link,
     // and the guest opening it lands on that title and joins by itself.
@@ -655,6 +656,89 @@ async function videoChat(host, guest) {
     await check("Guest closes video chat, host drops the tile", async () => !(await a.$(".tile:not(.me)")));
   } catch (e) { if (!(e instanceof VideoStop)) throw e; }
   await a.close().catch(() => {}); await b.close().catch(() => {});
+}
+
+// ---------------------------------------------------------------- video chat bubbles: reaching your buttons
+// As separate bubbles, the frame only takes the pointer while it is over a bubble or your buttons, and
+// the buttons show on hover. This drives the real mouse on the party's tab, so content.js's handoff of
+// the pointer is part of the test: point at your bubble, travel down to the buttons and press them.
+async function bubbleControls(s) {
+  console.log("\nVideo chat bubbles");
+  const page = s.page, sh = await shadow(page);
+  const step = (name, ok, note = "") => record("extension", name, "video", NaN, "-", ok, note);
+  const rect = id => sh(eval(`() => { const r = document.getElementById(${JSON.stringify(id)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }`));
+  const vcClass = () => sh(() => document.getElementById("vc").className);
+  const frameOf = () => page.frames().find(f => f.url().endsWith("/vc.html"));
+  await page.bringToFront();
+  await page.mouse.move(1000, 600);
+  let at = await rect("vbtn");
+  await page.mouse.move(at.x, at.y, { steps: 4 }); await page.mouse.click(at.x, at.y);
+  let f = null;
+  try { await until("video chat frame", async () => (f = frameOf()) && await f.evaluate(() => typeof mine === "object").catch(() => false), 10000); }
+  catch { step("Bubbles: video chat opens on the page", false, "no frame"); return; }
+  if (!(await vcClass()).includes("bubbles")) {
+    at = await rect("vc");
+    await page.mouse.move(at.x, at.y, { steps: 4 });
+    at = await rect("vclay"); await page.mouse.move(at.x, at.y, { steps: 3 }); await page.mouse.click(at.x, at.y);
+  }
+  const ok = await until("bubbles", async () => (await vcClass()).includes("bubbles") && await f.evaluate(() => document.body.classList.contains("bubbles")), 5000).then(() => true, () => false);
+  step("Bubbles: switch to separate bubbles", ok);
+  if (!ok) return;
+  // The buttons show by themselves for 4 s after opening; wait that out, with the pointer off the bubbles.
+  await page.mouse.move(900, 500, { steps: 4 });
+  await sleep(4500);
+  const geo = () => f.evaluate(() => {
+    const sp = spots.get(mine.tile), c = id => { const r = $(id).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; };
+    return { me: { x: sp.x + sp.s / 2, y: sp.y + sp.s / 2 }, mic: c("mic"), cam: c("cam"), min: c("bmin"),
+      shown: getComputedStyle($("tools")).opacity === "1", micOn: $("mic").getAttribute("aria-pressed") === "true" };
+  });
+  let g = await geo();
+  step("Bubbles: buttons hidden until you point at your bubble", !g.shown);
+  // Counts presses that reach the camera button. (The fake camera can't always start in a frame on
+  // this stand-in site, so the press itself is what's checked, not the picture.)
+  await f.evaluate(() => { window.camPresses = 0; $("cam").addEventListener("click", () => camPresses++); });
+  // From the video, onto your bubble, then down to the mic button, the way a hand would go.
+  await page.mouse.move(600, 300);
+  await page.mouse.move(g.me.x, g.me.y, { steps: 8 });
+  await sleep(300);
+  g = await geo();
+  step("Bubbles: pointing at your bubble shows your buttons", g.shown);
+  const micWas = g.micOn;
+  await page.mouse.move(g.mic.x, g.mic.y, { steps: 12 });
+  await sleep(300);
+  g = await geo();
+  step("Bubbles: the buttons stay while moving onto them", g.shown);
+  await page.mouse.click(g.mic.x, g.mic.y);
+  step("Bubbles: the mic button can be pressed", await until("mic", async () => (await geo()).micOn !== micWas, 4000).then(() => true, () => false));
+  await page.mouse.move(g.cam.x, g.cam.y, { steps: 4 }); await page.mouse.click(g.cam.x, g.cam.y);
+  step("Bubbles: the camera button can be pressed", (await f.evaluate(() => camPresses)) === 1);
+  // Put the mic back, then leave: the buttons wait a moment before hiding, and then the page gets the pointer back.
+  await sleep(1000);
+  g = await geo();
+  if (g.micOn !== micWas) { await page.mouse.move(g.mic.x, g.mic.y, { steps: 4 }); await page.mouse.click(g.mic.x, g.mic.y); await sleep(300); }
+  await f.evaluate(() => turn("video", false));
+  await page.mouse.move(g.mic.x, g.mic.y + 120, { steps: 6 });
+  await sleep(300);
+  step("Bubbles: the buttons wait a moment after the pointer leaves", (await geo()).shown);
+  await page.mouse.move(900, 500, { steps: 4 });
+  await sleep(2000);
+  g = await geo();
+  step("Bubbles: then they hide and the page gets the pointer back", !g.shown && !(await vcClass()).includes("hot"));
+  // Touch: no hover, so a tap on your bubble shows the buttons for a few seconds.
+  await f.evaluate(() => {
+    const t = mine.tile, r = t.getBoundingClientRect(), o = { pointerType: "touch", pointerId: 7, isPrimary: true, bubbles: true, button: 0, buttons: 1, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+    t.dispatchEvent(new PointerEvent("pointerdown", o)); t.dispatchEvent(new PointerEvent("pointerup", Object.assign({}, o, { buttons: 0 })));
+  });
+  await sleep(300);
+  step("Bubbles: a tap on your bubble shows your buttons (touch)", (await geo()).shown);
+  // Minimize, from the buttons under your bubble.
+  g = await geo();
+  await page.mouse.move(g.me.x, g.me.y, { steps: 4 });
+  await page.mouse.move(g.min.x, g.min.y, { steps: 10 }); await page.mouse.click(g.min.x, g.min.y);
+  step("Bubbles: the minimize button can be pressed", await until("min", async () => (await vcClass()).includes("min"), 4000).then(() => true, () => false));
+  await f.evaluate(() => toParent({ wsvc: "cmd", c: "layout" })).catch(() => {});
+  await f.evaluate(() => toParent({ wsvc: "cmd", c: "close" })).catch(() => {});
+  await sleep(500);
 }
 
 // ---------------------------------------------------------------- suite: index.html (screen share sound)
