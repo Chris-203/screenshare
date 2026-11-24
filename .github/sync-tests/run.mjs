@@ -672,7 +672,12 @@ async function screenSuite(web) {
   try {
     const hostCtx = await browsers[0].newContext();
     await hostCtx.addInitScript(() => {
+      const picked = [];
       navigator.mediaDevices.getDisplayMedia = async (c = {}) => {
+        // window.__failWhileLive: refuse a new capture while an earlier one still has live sound,
+        // the way Chrome on Windows can when switching from a tab with sound to a screen.
+        if (window.__failWhileLive && picked.some(s => s.getAudioTracks().some(t => t.readyState === "live")))
+          throw new DOMException("Could not start audio source", "NotReadableError");
         const canvas = Object.assign(document.createElement("canvas"), { width: 640, height: 360 });
         const g = canvas.getContext("2d"); let n = 0;
         setInterval(() => { g.fillStyle = `hsl(${n++ % 360} 60% 50%)`; g.fillRect(0, 0, 640, 360); }, 33);
@@ -682,11 +687,12 @@ async function screenSuite(web) {
           osc.frequency.value = 440; osc.connect(dest); osc.start();
           out.addTrack(dest.stream.getAudioTracks()[0]);
         }
-        window.__lastPick = c;
+        window.__lastPick = c; picked.push(out);
         return out;
       };
     });
     const host = await hostCtx.newPage(); watchErrors(host, "host");
+    let alerts = 0; host.on("dialog", d => { alerts++; d.dismiss().catch(() => {}); });
     // Keep every RTCPeerConnection the page makes, to read what actually arrives.
     // strict: play() with sound is refused unless it runs inside a tap, the way Safari on a Mac,
     // iPhone or iPad behaves (Chromium lets sound play any time after the first click).
@@ -771,6 +777,18 @@ async function screenSuite(web) {
     }), 3000).catch(() => false));
     await strict.click("#unmuteBtn");
     await hears("Tapping that turns sound back on", strict);
+
+    // Switching fails because Chrome won't open a second capture: the old share stops, the viewer
+    // stays connected, the host is told to pick again, and that pick works.
+    await host.evaluate(() => { window.__failWhileLive = true; });
+    await host.click("#switchBtn");
+    ok("Failed switch: host is told what to do", await until("the switch note", () => host.$eval("#pickErr", n => !n.classList.contains("hidden") && n.textContent.includes("pick the new one")), 5000).catch(() => false));
+    ok("Failed switch: no alert box, start button back", !alerts && await host.$eval("#startBtn", b => !b.classList.contains("hidden")));
+    ok("Failed switch: viewer stays connected, waiting", await until("the viewer's waiting note", () => viewer.$eval("#ovSub", n => n.textContent.includes("pick a screen")), 5000).catch(() => false));
+    await host.click("#startBtn");
+    await hears("Picking again after a failed switch, viewer hears it");
+    ok("The switch note goes away", await host.$eval("#pickErr", n => n.classList.contains("hidden")));
+    await host.evaluate(() => { window.__failWhileLive = false; });
 
     // A share that came back without sound (a picked window): the host is told.
     await host.click("#stopBtn");
