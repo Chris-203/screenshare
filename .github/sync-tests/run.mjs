@@ -747,6 +747,16 @@ async function screenSuite(web) {
       } catch { ok(step, false, JSON.stringify(last)); }
     };
     await hears("Viewer hears the host's sound without pressing anything else");
+    // The call's sdpTransform puts H.264 first (hardware on Windows and iPhones), so the picture must arrive in it.
+    ok("Picture arrives as H.264", await viewer.evaluate(async () => {
+      for (const pc of window.__pcs) {
+        if (pc.connectionState === "closed") continue;
+        const st = await pc.getStats(), codecs = {}; let id = null;
+        st.forEach(r => { if (r.type === "codec") codecs[r.id] = r.mimeType; if (r.type === "inbound-rtp" && r.kind === "video" && r.framesDecoded > 0) id = r.codecId; });
+        if (id) return codecs[id] === "video/H264";
+      }
+      return false;
+    }));
 
     await host.click("#switchBtn");
     await sleep(1000);
