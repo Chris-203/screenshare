@@ -1,11 +1,13 @@
 // Video quality for the screen share and the watch party's file stream.
 // Each viewer picks a size and a bitrate (or Auto); the host applies that choice to
 // the stream it sends to that viewer only. Auto keeps computers at full quality and
-// gives phones and tablets 1080p at 2.5 Mbps, which looks the same on a small screen
+// gives phones 720p at 1.5 Mbps and tablets 1080p at 2.5 Mbps, which look the same on a small screen
 // and costs far less battery and data.
 (() => {
-  const PHONE = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
-    || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1); // iPadOS says "Macintosh"
+  const UA = navigator.userAgent;
+  // iPadOS says "Macintosh"; Android tablets leave "Mobile" out of the user agent.
+  const TABLET = /iPad/.test(UA) || (/Macintosh/.test(UA) && navigator.maxTouchPoints > 1) || (/Android/i.test(UA) && !/Mobile/i.test(UA));
+  const PHONE = TABLET || /iPhone|iPod|Android/i.test(UA);
   const SIZES = ["source", "1080", "720", "480"];
   const RATES = [8, 6, 4, 2.5, 1.5, 0.8];                 // Mbps
   const AUTO_RATE = { 1080: 2.5, 720: 1.5, 480: 0.8 };    // Mbps for each size when bitrate is Auto
@@ -16,11 +18,12 @@
     res: q && SIZES.includes(q.res) ? q.res : "auto",
     rate: q && RATES.includes(q.rate) ? q.rate : "auto",
     phone: !!q && q.phone === true,
+    tablet: !!q && q.tablet === true,
   });
   // -> { res: "source" | "1080" | ..., mbps } for a host whose top bitrate is maxMbps
   function resolve(q, maxMbps) {
     q = clean(q);
-    const res = q.res !== "auto" ? q.res : q.phone ? "1080" : "source";
+    const res = q.res !== "auto" ? q.res : q.tablet ? "1080" : q.phone ? "720" : "source";
     const mbps = q.rate !== "auto" ? q.rate : res === "source" ? maxMbps : AUTO_RATE[res];
     return { res, mbps: Math.min(mbps, maxMbps) };
   }
@@ -72,7 +75,7 @@
   function mount(button, maxMbps, storeKey, send) {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem(storeKey) || "{}"); } catch {}
-    let q = clean(Object.assign({}, saved, { phone: PHONE }));
+    let q = clean(Object.assign({}, saved, { phone: PHONE, tablet: TABLET }));
 
     const css = document.createElement("style");
     css.textContent = ".qpanel{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(max(16px,env(safe-area-inset-bottom)) + 64px);z-index:20;"
@@ -92,9 +95,9 @@
 
     const opt = (sel, value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; sel.append(o); };
     function render() {
-      const r = resolve(q, maxMbps), auto = resolve({ res: q.res, phone: q.phone }, maxMbps);
+      const r = resolve(q, maxMbps), auto = resolve({ res: q.res, phone: q.phone, tablet: q.tablet }, maxMbps);
       resSel.textContent = ""; rateSel.textContent = "";
-      opt(resSel, "auto", `Auto (${label(resolve({ phone: q.phone }, maxMbps).res)})`);
+      opt(resSel, "auto", `Auto (${label(resolve({ phone: q.phone, tablet: q.tablet }, maxMbps).res)})`);
       SIZES.forEach(s => opt(resSel, s, label(s)));
       opt(rateSel, "auto", `Auto (${auto.mbps} Mbps)`);
       RATES.filter(m => m <= maxMbps).forEach(m => opt(rateSel, m, `${m} Mbps`));
@@ -102,7 +105,7 @@
       button.textContent = q.res === "auto" && q.rate === "auto" ? "Quality" : label(r.res); // short: the bar is narrow on phones
     }
     function change() {
-      q = clean({ res: resSel.value, rate: rateSel.value === "auto" ? "auto" : +rateSel.value, phone: PHONE });
+      q = clean({ res: resSel.value, rate: rateSel.value === "auto" ? "auto" : +rateSel.value, phone: PHONE, tablet: TABLET });
       try { localStorage.setItem(storeKey, JSON.stringify({ res: q.res, rate: q.rate })); } catch {}
       render(); send(q);
     }
