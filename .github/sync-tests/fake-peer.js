@@ -35,10 +35,10 @@
     setTimeout(r, 3000);
   });
   class MediaConnection extends Emitter {
-    constructor(owner, cid, remote, localStream) {
+    constructor(owner, cid, remote, localStream, opts) {
       super();
       this._owner = owner; this._cid = cid; this.peer = remote; this.open = false; this.type = "media";
-      this.localStream = localStream || null; this.remoteStream = null;
+      this.localStream = localStream || null; this.remoteStream = null; this.options = opts || {};
       const pc = this.peerConnection = new RTCPeerConnection();
       pc.ontrack = e => { this.remoteStream = e.streams[0]; this.emit("stream", e.streams[0]); };
       pc.oniceconnectionstatechange = () => {
@@ -49,16 +49,19 @@
     }
     async _offer() {
       const pc = this.peerConnection;
-      await pc.setLocalDescription(await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true }));
+      await pc.setLocalDescription(this._transform(await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true })));
       await gathered(pc);
       if (!this._closed) this._owner._tx({ op: "call", to: this.peer, cid: this._cid, sdp: pc.localDescription.sdp });
     }
-    answer(stream) {
+    // PeerJS's sdpTransform option: applied to our own offer or answer before it is set and sent.
+    _transform(d) { const f = this.options.sdpTransform; return typeof f === "function" ? { type: d.type, sdp: f(d.sdp) || d.sdp } : d; }
+    answer(stream, opts) {
+      if (opts && opts.sdpTransform) this.options.sdpTransform = opts.sdpTransform;
       if (stream) { this.localStream = stream; stream.getTracks().forEach(t => this.peerConnection.addTrack(t, stream)); }
       (async () => {
         const pc = this.peerConnection;
         await pc.setRemoteDescription({ type: "offer", sdp: this._offerSdp });
-        await pc.setLocalDescription(await pc.createAnswer());
+        await pc.setLocalDescription(this._transform(await pc.createAnswer()));
         await gathered(pc);
         if (!this._closed) this._owner._tx({ op: "data", cid: this._cid, payload: { __answer: pc.localDescription.sdp } });
       })().catch(e => console.error(e));
@@ -105,9 +108,9 @@
       this._tx({ op: "connect", to, cid });
       return c;
     }
-    call(to, stream) {
+    call(to, stream, opts) {
       const cid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${seq++}`;
-      const c = new MediaConnection(this, cid, to, stream);
+      const c = new MediaConnection(this, cid, to, stream, opts);
       this._conns.set(cid, c);
       c._offer().catch(e => console.error(e));
       return c;
