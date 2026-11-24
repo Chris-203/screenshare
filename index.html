@@ -130,6 +130,7 @@
     <div id="requests" class="stack hidden"></div>
     <video id="preview" class="hidden" muted playsinline autoplay></video>
     <label class="check"><input type="checkbox" id="withAudio" checked> Include computer sound</label>
+    <p id="pickErr" class="warn hidden"></p>
     <p id="noSound" class="warn hidden">No sound is going out. Chrome only shares sound from a tab (with "Also share tab audio" on) or your entire screen (with "Also share system audio" on), never from a single window. Press Switch window and pick one of those.</p>
     <button id="startBtn" class="primary" disabled>Choose screen or window</button>
     <div class="row hidden" id="liveRow">
@@ -355,6 +356,7 @@
         vt.addEventListener("ended", () => { if (stream === next) stopSharing(); });
         if (stream) stream.getTracks().forEach(t => t.stop());
         stream = next;
+        show($("pickErr"), false);
         $("preview").srcObject = stream;
         show($("preview")); show($("startBtn"), false); show($("liveRow"));
         $("withAudio").disabled = true;
@@ -363,7 +365,16 @@
         viewers.forEach((_, id) => callViewer(id));
         setStatus();
       } catch (e) {
-        if (e.name !== "NotAllowedError") alert("Couldn't start sharing: " + e.message);
+        if (e.name === "NotAllowedError") return; // picker closed with Cancel
+        // Chrome on Windows can refuse a second capture (often "Could not start audio source")
+        // while the first one is still running. Stop the old share so the next pick starts clean;
+        // viewers stay connected and see "Waiting for Chris to pick a screen".
+        const wasLive = !!stream;
+        if (wasLive) stopSharing();
+        $("pickErr").textContent = wasLive
+          ? `Chrome couldn't switch straight across (${e.message}). The old share is stopped and everyone is still connected: press Choose screen or window to pick the new one.`
+          : `Chrome couldn't start sharing (${e.message}). Try again${$("withAudio").checked ? ", or untick Include computer sound" : ""}.`;
+        show($("pickErr"));
       }
     }
     function stopSharing() {
