@@ -678,6 +678,9 @@ async function screenSuite(web) {
         // the way Chrome on Windows can when switching from a tab with sound to a screen.
         if (window.__failWhileLive && picked.some(s => s.getAudioTracks().some(t => t.readyState === "live")))
           throw new DOMException("Could not start audio source", "NotReadableError");
+        // One-shot failures: a capture error we can't foresee, or the person pressing Cancel.
+        if (window.__failNext) { window.__failNext = false; throw new DOMException("Could not start video source", "NotReadableError"); }
+        if (window.__cancelNext) { window.__cancelNext = false; throw new DOMException("Permission denied", "NotAllowedError"); }
         const canvas = Object.assign(document.createElement("canvas"), { width: 640, height: 360 });
         const g = canvas.getContext("2d"); let n = 0;
         setInterval(() => { g.fillStyle = `hsl(${n++ % 360} 60% 50%)`; g.fillRect(0, 0, 640, 360); }, 33);
@@ -738,17 +741,19 @@ async function screenSuite(web) {
       const v = document.getElementById("remote");
       const s = v.srcObject, a = s && s.getAudioTracks()[0];
       let energy = 0;
-      for (const pc of window.__pcs) {
-        if (pc.connectionState === "closed") continue;
-        (await pc.getStats()).forEach(r => { if (r.type === "inbound-rtp" && r.kind === "audio") energy = Math.max(energy, r.totalAudioEnergy || 0); });
-      }
+      // The newest open call is the one playing now (a switch replaces the call).
+      const pc = window.__pcs.filter(x => x.connectionState !== "closed").pop();
+      if (pc) (await pc.getStats()).forEach(r => { if (r.type === "inbound-rtp" && r.kind === "audio") energy = r.totalAudioEnergy || 0; });
       return { picture: v.videoWidth > 0 && !v.paused, track: !!a && a.readyState === "live", muted: v.muted, paused: v.paused, energy, vol: v.volume };
     });
     const hears = async (step, page = viewer, timeout = 15000) => {
       let last = null, t0 = Date.now();
-      const e0 = (await heard(page)).energy;
       try {
-        await until(step, async () => { last = await heard(page); return last.picture && last.track && !last.muted && !last.paused && last.vol > 0 && last.energy > e0; }, timeout);
+        // Sound energy must keep rising between two samples a moment apart.
+        await until(step, async () => {
+          const before = (await heard(page)).energy; await sleep(300); last = await heard(page);
+          return last.picture && last.track && !last.muted && !last.paused && last.vol > 0 && last.energy > before;
+        }, timeout);
         ok(step, true, `${Date.now() - t0} ms`);
       } catch { ok(step, false, JSON.stringify(last)); }
     };
@@ -778,9 +783,25 @@ async function screenSuite(web) {
     await strict.click("#unmuteBtn");
     await hears("Tapping that turns sound back on", strict);
 
-    // Switching fails because Chrome won't open a second capture: the old share stops, the viewer
-    // stays connected, the host is told to pick again, and that pick works.
+    // Chrome won't open a capture with sound while an earlier one still holds sound: switching
+    // must let go of the old sound first, so it works in one go.
     await host.evaluate(() => { window.__failWhileLive = true; });
+    await host.click("#switchBtn");
+    ok("Switch to a new source with sound works first time", await host.$eval("#pickErr", n => n.classList.contains("hidden")) && !alerts);
+    await hears("After that switch, viewer hears it");
+
+    // Cancelling the picker mid-switch: the picture keeps going, the host is told sound is paused.
+    await host.evaluate(() => { window.__cancelNext = true; });
+    await host.click("#switchBtn");
+    ok("Cancelled switch: picture stays live, host told sound is paused", await until("the paused note", () => host.$eval("#pickErr", n => !n.classList.contains("hidden") && n.textContent.includes("paused")), 5000).catch(() => false)
+      && await host.$eval("#liveRow", r => !r.classList.contains("hidden")) && (await heard()).picture);
+    await host.click("#switchBtn");
+    await hears("Switching again brings the sound back");
+    ok("The paused note goes away", await host.$eval("#pickErr", n => n.classList.contains("hidden")));
+
+    // Any other switch failure: the old share stops, the viewer stays connected, the host is told
+    // to pick again, and that pick works.
+    await host.evaluate(() => { window.__failNext = true; });
     await host.click("#switchBtn");
     ok("Failed switch: host is told what to do", await until("the switch note", () => host.$eval("#pickErr", n => !n.classList.contains("hidden") && n.textContent.includes("pick the new one")), 5000).catch(() => false));
     ok("Failed switch: no alert box, start button back", !alerts && await host.$eval("#startBtn", b => !b.classList.contains("hidden")));
