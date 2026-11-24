@@ -96,7 +96,7 @@ new ResizeObserver(fit).observe($("wrap"));
 window.addEventListener("resize", fit);
 // Show the camera and mic buttons for a few seconds after opening, so they can be found; after that, on hover.
 document.body.classList.add("hint");
-setTimeout(() => document.body.classList.remove("hint"), 4000);
+setTimeout(() => { document.body.classList.remove("hint"); fit(); }, 4000);
 
 // Play one person's sound. Chrome only allows sound after a click in this frame (or on the page, when
 // it lets the frame share that), so when it says no, ask for one click and try everyone again then.
@@ -385,6 +385,9 @@ chrome.runtime.onMessage.addListener(m => {
 // the rest of the page stays clickable.
 const BUBBLE_MIN = 70, BUBBLE_MAX = 420, GAP = 10;
 let layout = "box", origin = { x: 18, y: 18, w: 160 }, dragging = false;
+// Your buttons' zone (see placeBubbles), how long they stay after the pointer leaves, and after a tap.
+const ZONE_PAD = 8, HIDE_MS = 1500, TAP_MS = 4000;
+let myZone = null;
 const spots = new WeakMap();                       // tile element -> { x, y, s }
 const toParent = msg => { if (parent !== window) parent.postMessage(Object.assign({ wsvc: "" }, msg), "*"); };
 const clampSpot = sp => {
@@ -419,7 +422,13 @@ function placeBubbles() {
   const tx = Math.max(0, Math.min(me.x + me.s / 2 - tw / 2, innerWidth - tw));
   const ty = below + th <= innerHeight ? below : Math.max(0, me.y - th - 6);
   t.style.left = `${tx}px`; t.style.top = `${ty}px`;
-  shapes.push({ x: tx, y: ty, w: tw, h: th, round: false });
+  // The buttons and the gap between them and your bubble count as one zone, padded a little, so the
+  // pointer can travel from the bubble to a button without ever being "off" (which would hide them).
+  const zy = Math.min(ty, me.y + me.s / 2), zb = Math.max(ty + th, me.y + me.s / 2);
+  myZone = { x: tx - ZONE_PAD, y: zy, w: tw + ZONE_PAD * 2, h: zb - zy + (ty >= below ? ZONE_PAD : 0) };
+  if (ty < below) { myZone.y -= ZONE_PAD; myZone.h += ZONE_PAD; }
+  // Only while they show: hidden buttons shouldn't keep the page under them from being clicked.
+  if (document.body.matches(".mehov, .hint")) shapes.push({ x: myZone.x, y: myZone.y, w: myZone.w, h: myZone.h, round: false });
   if (ty >= below) below = ty + th + 4;
   if (n.textContent) {
     n.style.left = `${me.x}px`; n.style.top = `${Math.min(below, innerHeight - n.offsetHeight)}px`;
@@ -447,7 +456,7 @@ document.addEventListener("pointerdown", e => {
   if (!sp) return;
   e.preventDefault();
   const resize = !!e.target.closest(".rz"), start = { x: e.clientX, y: e.clientY, sp: Object.assign({}, sp) };
-  el.setPointerCapture(e.pointerId); dragging = true; el.classList.add("drag");
+  try { el.setPointerCapture(e.pointerId); } catch {} dragging = true; el.classList.add("drag");
   const move = ev => {
     const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
     if (resize) sp.s = start.sp.s + (Math.abs(dx) > Math.abs(dy) ? dx : dy);
@@ -459,16 +468,42 @@ document.addEventListener("pointerdown", e => {
 });
 // Hover is tracked by hand (the "hov" class) rather than with :hover, which stays stuck on once
 // content.js takes the pointer away from the frame. Off the bubbles, the pointer goes back to the page.
-let hovTile = null, inside = false;
-function hover(el) { if (!el) document.body.classList.remove("mehov"); if (hovTile === el) return; if (hovTile) hovTile.classList.remove("hov"); hovTile = el; if (el) el.classList.add("hov"); }
+let hovTile = null, inside = false, toolsT = 0;
+function hover(el) { if (hovTile === el) return; if (hovTile) hovTile.classList.remove("hov"); hovTile = el; if (el) el.classList.add("hov"); }
 function inFrame(on) { if (inside === on) return; inside = on; document.body.classList.toggle("hov", on); toParent({ wsvc: "hover", on }); }
-const cold = () => { if (layout !== "bubbles" || dragging) return; hover(null); inFrame(false); toParent({ wsvc: "cold" }); };
+// Your buttons: shown at once, hidden only after a pause, so they can still be reached after a slip.
+function showTools(ms) {
+  clearTimeout(toolsT); toolsT = 0;
+  if (ms) toolsT = setTimeout(hideTools, ms);
+  if (!document.body.classList.contains("mehov")) { document.body.classList.add("mehov"); fit(); }
+}
+function hideTools(ms) {
+  if (ms) { if (!toolsT) toolsT = setTimeout(hideTools, ms); return; }
+  clearTimeout(toolsT); toolsT = 0;
+  if (document.body.classList.contains("mehov")) { document.body.classList.remove("mehov"); fit(); }
+}
+const inRect = (r, x, y) => !!r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+// Over your own bubble, its buttons, or the gap between them. By position, not by what's under the
+// pointer: hidden buttons don't take the pointer, so they'd never be "under" it.
+function nearMine(x, y) {
+  const sp = spots.get(mine.tile);
+  if (sp && (x - sp.x - sp.s / 2) ** 2 + (y - sp.y - sp.s / 2) ** 2 <= (sp.s / 2) ** 2) return true;
+  return document.body.classList.contains("mehov") && inRect(myZone, x, y);
+}
+const cold = () => { if (layout !== "bubbles" || dragging) return; hover(null); inFrame(false); hideTools(HIDE_MS); toParent({ wsvc: "cold" }); };
 document.addEventListener("pointermove", e => {
-  if (dragging) return;
+  if (dragging || e.pointerType === "touch") return;
   inFrame(true); hover(e.target.closest(".tile"));
-  // Your buttons show while you point at your own bubble or at the buttons themselves.
-  document.body.classList.toggle("mehov", !!e.target.closest(".tile.me, #tools"));
-  if (!e.target.closest(".tile, #note, #tools")) cold();
+  const near = layout === "bubbles" && nearMine(e.clientX, e.clientY);
+  if (near) showTools(); else if (document.body.classList.contains("mehov")) hideTools(HIDE_MS);
+  if (!near && !e.target.closest(".tile, #note, #tools")) cold();
+});
+// Touch has no hover: a tap on your bubble (or the page tapping it, from content.js) shows the buttons
+// for a few seconds, and pressing one of them keeps them up a few seconds more.
+const tapped = (x, y) => { if (layout === "bubbles" && nearMine(x, y)) showTools(TAP_MS); };
+document.addEventListener("pointerup", e => {
+  if (e.pointerType === "mouse" || layout !== "bubbles") return;
+  if (nearMine(e.clientX, e.clientY)) showTools(TAP_MS); else cold();
 });
 const left = () => { if (dragging) return; hover(null); inFrame(false); cold(); };
 document.documentElement.addEventListener("pointerleave", left);
@@ -482,7 +517,9 @@ window.addEventListener("message", e => {
   if (e.source !== parent || parent === window || !e.data) return;
   if (e.data.wsvc === "leave") leave();
   else if (e.data.wsvc === "layout") setLayout(e.data.mode, e.data);
-  else if (e.data.wsvc === "out") { inside = false; hover(null); document.body.classList.remove("hov"); }
+  else if (e.data.wsvc === "out") { inside = false; hover(null); hideTools(); document.body.classList.remove("hov"); }
+  else if (e.data.wsvc === "tap") tapped(+e.data.x, +e.data.y);
+  else if (e.data.wsvc === "enter" && layout === "bubbles" && !dragging && nearMine(+e.data.x, +e.data.y)) { inFrame(true); showTools(); }
 });
 function leave() {
   if (up) sig("*", { t: "bye" });

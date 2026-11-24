@@ -427,11 +427,25 @@
   const overShape = (x, y) => vcShapes.some(s => s.round
     ? (x - s.x - s.w / 2) ** 2 + (y - s.y - s.h / 2) ** 2 <= (s.w / 2) ** 2
     : x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h);
+  // Touch has no hover, so the first tap on a bubble lands here, on the page: hand the pointer to the
+  // frame and tell it about the tap, so your buttons show without a second tap.
+  window.addEventListener("pointerdown", e => {
+    if (!vcFrame || vcLayout !== "bubbles" || e.pointerType === "mouse" || !overShape(e.clientX, e.clientY)) return;
+    $("vc").classList.add("hot");
+    try { vcFrame.contentWindow.postMessage({ wsvc: "tap", x: e.clientX, y: e.clientY }, "*"); } catch {}
+  }, { capture: true, passive: true });
   // In the box, the frame can't always tell that the pointer left it, so a move seen out here says so.
   window.addEventListener("pointermove", e => {
     if (!vcFrame) return;
     const box = $("vc");
-    if (vcLayout === "bubbles") { if (overShape(e.clientX, e.clientY)) box.classList.add("hot"); return; }
+    if (vcLayout === "bubbles") {
+      if (box.classList.contains("hot") || !overShape(e.clientX, e.clientY)) return;
+      box.classList.add("hot");
+      // The frame only hears the moves after this one, and none come if the pointer stops right
+      // here, so say where it is: pointing at your bubble then shows your buttons straight away.
+      try { vcFrame.contentWindow.postMessage({ wsvc: "enter", x: e.clientX, y: e.clientY }, "*"); } catch {}
+      return;
+    }
     if (!box.classList.contains("hov")) return;
     const r = box.getBoundingClientRect();
     if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
