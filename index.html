@@ -341,6 +341,11 @@
     connectPeer();
 
     async function pickScreen() {
+      // Chrome on Windows can refuse a new capture with sound while the old one still holds
+      // sound ("Could not start audio source"). Let go of the old sound before the picker opens;
+      // the old picture keeps going until the new one is ready.
+      const released = stream ? stream.getAudioTracks() : [];
+      released.forEach(t => { t.stop(); stream.removeTrack(t); });
       try {
         const next = await navigator.mediaDevices.getDisplayMedia({
           // 1080p is plenty for a movie and costs about half the encoding work of 1440p,
@@ -365,7 +370,13 @@
         viewers.forEach((_, id) => callViewer(id));
         setStatus();
       } catch (e) {
-        if (e.name === "NotAllowedError") return; // picker closed with Cancel
+        if (e.name === "NotAllowedError") { // picker closed with Cancel
+          if (released.length && stream) {
+            $("pickErr").textContent = "Sound is paused because the switch was cancelled. Press Switch window to pick again and bring it back.";
+            show($("pickErr"));
+          }
+          return;
+        }
         // Chrome on Windows can refuse a second capture (often "Could not start audio source")
         // while the first one is still running. Stop the old share so the next pick starts clean;
         // viewers stay connected and see "Waiting for Chris to pick a screen".
